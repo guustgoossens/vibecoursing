@@ -1,5 +1,24 @@
 # Vibecoursing Product Requirement Document
 
+## Table of Contents
+- [Product Snapshot](#product-snapshot)
+- [Success Metrics](#success-metrics)
+- [Target Audience](#target-audience)
+- [User Stories](#user-stories)
+- [Assumptions](#assumptions)
+- [Constraints](#constraints)
+- [Functional Requirements](#functional-requirements)
+- [Non-Functional Requirements](#non-functional-requirements)
+- [User Journeys](#user-journeys)
+- [UI & UX Notes](#ui--ux-notes)
+- [Technical Considerations](#technical-considerations)
+- [Analytics & Instrumentation](#analytics--instrumentation)
+- [Out of Scope (MVP)](#out-of-scope-mvp)
+- [Risks & Mitigations](#risks--mitigations)
+- [Resolved Decisions](#resolved-decisions)
+- [Next Steps](#next-steps)
+- [Potential Follow-up](#potential-follow-up)
+
 ## Product Snapshot
 - **Product Name:** Vibecoursing
 - **Tagline:** AI-guided conversational learning with structured progress tracking
@@ -120,7 +139,9 @@
 4. Instrument analytics events for core flows; set up monitoring dashboards.
 5. Run user tests on early build to validate usability and pacing before feature expansion.
 
-> **Potential follow-up:**
+## Potential Follow-up
 > 1. Prioritize implementation milestones (frontend vs backend).
 > 2. Outline Convex schema in detail.
 > 3. Draft initial prompt templates.
+
+Return to the [Table of Contents](#table-of-contents) for quick navigation.
