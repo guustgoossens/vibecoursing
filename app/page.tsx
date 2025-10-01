@@ -5,7 +5,7 @@ import { api } from '@/convex/_generated/api';
 import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import type { User } from '@workos-inc/node';
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Id } from '@/convex/_generated/dataModel';
 
 type DerivedProfile = {
@@ -79,13 +79,34 @@ function Content() {
   }, [user, derivedProfile.email, derivedProfile.name, derivedProfile.avatarUrl, syncUserProfile]);
 
   const bootstrap = useQuery(api.chat.bootstrap);
-  const activeChannelId = bootstrap?.channels?.[0]?.id ?? null;
+  const channels = useQuery(api.chat.listChannels);
+  const [activeChannelId, setActiveChannelId] = useState<Id<'channels'> | null>(null);
+
+  useEffect(() => {
+    if (channels === undefined) {
+      return;
+    }
+    if (channels.length === 0) {
+      if (activeChannelId !== null) {
+        setActiveChannelId(null);
+      }
+      return;
+    }
+    if (!activeChannelId || !channels.some((channel) => channel.id === activeChannelId)) {
+      setActiveChannelId(channels[0].id);
+    }
+  }, [channels, activeChannelId]);
+
+  const handleSelectChannel = useCallback((channelId: Id<'channels'>) => {
+    setActiveChannelId((current) => (current === channelId ? current : channelId));
+  }, []);
+
   const messagesResult = useQuery(
     api.chat.listMessages,
     activeChannelId ? { channelId: activeChannelId } : 'skip'
   );
 
-  if (bootstrap === undefined) {
+  if (channels === undefined) {
     return (
       <ChatLayout
         header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
@@ -95,7 +116,7 @@ function Content() {
     );
   }
 
-  const { viewer, channels } = bootstrap;
+  const viewer = bootstrap?.viewer ?? null;
   const activeChannel = activeChannelId
     ? channels.find((channel) => channel.id === activeChannelId) ?? null
     : null;
@@ -103,7 +124,13 @@ function Content() {
   return (
     <ChatLayout
       header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
-      sidebar={<ChannelSidebar channels={channels} activeChannelId={activeChannel?.id ?? null} />}
+      sidebar={
+        <ChannelSidebar
+          channels={channels}
+          activeChannelId={activeChannel?.id ?? null}
+          onSelectChannel={handleSelectChannel}
+        />
+      }
       main={
         <ChatPane
           viewer={viewer}
@@ -136,9 +163,11 @@ function WorkspaceTopBar({ user, onSignOut }: { user: User | null | undefined; o
 function ChannelSidebar({
   channels,
   activeChannelId,
+  onSelectChannel,
 }: {
   channels: ChannelSummary[];
   activeChannelId: Id<'channels'> | null;
+  onSelectChannel: (channelId: Id<'channels'>) => void;
 }) {
   return (
     <>
@@ -151,28 +180,34 @@ function ChannelSidebar({
           <p className="text-sm text-muted-foreground">No channels yet—run the setup mutation to seed a default room.</p>
         ) : (
           <ul className="flex flex-col gap-2 text-sm">
-            {channels.map((channel) => (
-              <li key={channel.id}>
-                <div
-                  className={`w-full rounded-md border px-3 py-2 transition ${
-                    channel.id === activeChannelId
-                      ? 'border-slate-300 bg-background text-foreground shadow-sm dark:border-slate-700'
-                      : 'border-transparent bg-background/40 text-muted-foreground'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium">#{channel.name}</span>
-                    {channel.isPrivate && <span className="text-[10px] uppercase text-muted-foreground">Private</span>}
-                  </div>
-                  {channel.description && <p className="text-xs text-muted-foreground">{channel.description}</p>}
-                </div>
-              </li>
-            ))}
+            {channels.map((channel) => {
+              const isActive = channel.id === activeChannelId;
+              return (
+                <li key={channel.id}>
+                  <button
+                    type="button"
+                    className={`w-full rounded-md border px-3 py-2 text-left transition ${
+                      isActive
+                        ? 'border-slate-300 bg-background text-foreground shadow-sm dark:border-slate-700'
+                        : 'border-transparent bg-background/40 text-muted-foreground hover:border-slate-300 hover:bg-background hover:text-foreground dark:hover:border-slate-700'
+                    }`}
+                    aria-current={isActive ? 'page' : undefined}
+                    onClick={() => onSelectChannel(channel.id)}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">#{channel.name}</span>
+                      {channel.isPrivate && <span className="text-[10px] uppercase text-muted-foreground">Private</span>}
+                    </div>
+                    {channel.description && <p className="text-xs text-muted-foreground">{channel.description}</p>}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </nav>
       <p className="text-xs text-muted-foreground">
-        Channel switching is coming next. For now the first channel loads automatically.
+        Select a channel to jump between rooms. New channels appear here instantly when Convex data updates.
       </p>
     </>
   );
