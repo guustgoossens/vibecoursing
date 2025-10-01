@@ -4,9 +4,16 @@ import { Authenticated, Unauthenticated, useMutation, useQuery } from 'convex/re
 import { api } from '@/convex/_generated/api';
 import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
-import type { User } from '@workos-inc/node';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Doc, Id } from '@/convex/_generated/dataModel';
+
+type AuthLikeUser = {
+  email?: string | null;
+  firstName?: unknown;
+  lastName?: unknown;
+  profilePictureUrl?: unknown;
+  photoUrl?: unknown;
+};
 
 type DerivedProfile = {
   email?: string;
@@ -37,19 +44,22 @@ type PendingMessage = {
 
 const MAX_MESSAGE_LENGTH = 2000;
 
-function deriveProfileFields(user: User | null | undefined): DerivedProfile {
+function deriveProfileFields(user: AuthLikeUser | null | undefined): DerivedProfile {
   if (!user) {
     return {};
   }
-  const first = (user as Record<string, unknown>).firstName;
-  const last = (user as Record<string, unknown>).lastName;
-  const nameParts = [first, last]
-    .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
-    .map((part) => part.trim());
+  const profileAwareUser = user;
+  const toOptionalString = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+
+  const first = toOptionalString(profileAwareUser.firstName);
+  const last = toOptionalString(profileAwareUser.lastName);
+  const nameParts = [first, last].filter((part): part is string => part !== undefined);
   const email = typeof user.email === 'string' && user.email.length > 0 ? user.email : undefined;
   const name = nameParts.length > 0 ? nameParts.join(' ') : email;
-  const avatarCandidate = (user as Record<string, unknown>).profilePictureUrl ?? (user as Record<string, unknown>).photoUrl;
-  const avatarUrl = typeof avatarCandidate === 'string' && avatarCandidate.length > 0 ? avatarCandidate : undefined;
+  const avatarCandidate =
+    toOptionalString(profileAwareUser.profilePictureUrl) ?? toOptionalString(profileAwareUser.photoUrl);
+  const avatarUrl = avatarCandidate;
 
   return {
     email,
@@ -182,7 +192,7 @@ function Content() {
   );
 }
 
-function WorkspaceTopBar({ user, onSignOut }: { user: User | null | undefined; onSignOut: () => void }) {
+function WorkspaceTopBar({ user, onSignOut }: { user: AuthLikeUser | null | undefined; onSignOut: () => void }) {
   return (
     <div className="flex h-14 items-center justify-between px-6">
       <div className="flex items-center gap-3">
@@ -548,7 +558,7 @@ function UnauthenticatedState() {
   );
 }
 
-function UserMenu({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+function UserMenu({ user, onSignOut }: { user: AuthLikeUser; onSignOut: () => void }) {
   const derivedProfile = useMemo(() => deriveProfileFields(user), [user]);
   return (
     <div className="flex items-center gap-3">
