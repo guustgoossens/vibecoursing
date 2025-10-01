@@ -7,6 +7,7 @@ All AI-driven behaviors—including conversational replies, follow-up prompts, p
 - **Audit WorkOS handoff**: Confirm the existing middleware protects the chat routes, ensure the Convex client receives the WorkOS user profile (user id/email) in `auth.getUserIdentity()`, and document any required metadata mapping.
 - **Schema scaffolding**: Define initial Convex tables and indexes (`users`, `channels`, `channelMembers`, `messages`) with clear validators, ownership fields, and timestamps; seed a handful of records if helpful for quick UI bring-up.
 - **Core functions**: Implement simple Convex queries/mutations for listing channels, fetching messages (paginated by `createdAt`), and inserting new messages. Guard them with auth checks using the already-working WorkOS identity.
+- **Mistral SDK wiring**: Centralize all AI calls through Convex actions that wrap the Mistral Chat Completions API, with helpers for plan generation, follow-up prompts, and future recap flows while handling rate limits and error logging.
 - **Local tooling**: Update any existing `docs/` scripts or lint rules to cover the new tables, and add concise notes on how to run Convex dev + Next.js simultaneously for anyone onboarding.
 - **Developer setup**: After pulling, run `npx convex dev` once to regenerate `_generated` types and keep the Next.js + Convex dev servers aligned.
 - **Acceptance**: Running `npx convex dev` plus `pnpm dev` yields connected clients that can read seeded channels/messages while authenticated via WorkOS.
