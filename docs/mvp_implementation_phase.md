@@ -14,9 +14,13 @@ All AI-driven behaviors—including conversational replies, follow-up prompts, p
 
 ## Phase 2 – Chat Interface Slice
 - **Layout shell**: Build a minimal Next.js App Router layout with Tailwind—a left-side channel list, main chat window, message composer, and top bar showing WorkOS user info.
+  - Implementation: `app/page.tsx` now composes the chat shell via `ChatLayout`, `ChannelSidebar`, and a dedicated top bar so the UI spans the full viewport.
 - **Data plumbing**: Use Convex React hooks (`useQuery`, `useMutation`) to populate the channel list and stream messages in real time; fall back to placeholder skeleton states while loading.
+  - Implementation: `useQuery(api.chat.listChannels)` drives the sidebar with selection state, while `useQuery(api.chat.listMessages)` streams updates per channel with auto-scroll and skeleton fallbacks.
 - **Message composer**: Wire the composer to the send-message mutation with optimistic updates and disabled state when offline/unauthenticated.
+  - Implementation: `MessageComposer` dispatches `api.chat.sendMessage` with local pending state, character limits, offline detection, and inline error feedback.
 - **State hygiene**: Handle empty channel states, auth edge cases (show sign-in CTA if session missing), and a basic error toast/toastless inline message for mutation failures.
+  - Implementation: Empty channel/message states surface direct guidance, inline mutation errors surface near the composer, and unauthenticated visitors hit the sign-in CTA.
 - **Acceptance**: Authenticated users see live channel updates, can send messages from the UI, and changes propagate instantly across open clients.
 
 ## Phase 3 – CRUD & Polish

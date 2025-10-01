@@ -5,7 +5,7 @@ import { api } from '@/convex/_generated/api';
 import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import type { User } from '@workos-inc/node';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Doc, Id } from '@/convex/_generated/dataModel';
 
 type DerivedProfile = {
@@ -34,6 +34,8 @@ type PendingMessage = {
   body: string;
   createdAt: number;
 };
+
+const MAX_MESSAGE_LENGTH = 2000;
 
 function deriveProfileFields(user: User | null | undefined): DerivedProfile {
   if (!user) {
@@ -278,12 +280,26 @@ function ChatPane({
   onSendMessage: (channelId: Id<'channels'>, body: string) => Promise<void>;
   isLoadingMessages: boolean;
 }) {
+  const messageContainerRef = useRef<HTMLDivElement>(null);
+  const activeChannelId = channel?.id ?? null;
+  const optimisticMessages = useMemo(() => {
+    if (!activeChannelId) {
+      return [] as PendingMessage[];
+    }
+    return pendingMessages.filter((message) => message.channelId === activeChannelId);
+  }, [pendingMessages, activeChannelId]);
+  const hasMessages = channel ? messages.length > 0 || optimisticMessages.length > 0 : false;
+
+  useEffect(() => {
+    if (!messageContainerRef.current) {
+      return;
+    }
+    messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+  }, [messages, optimisticMessages]);
+
   if (!channel) {
     return <EmptyChannelState viewer={viewer} />;
   }
-
-  const optimisticMessages = pendingMessages.filter((message) => message.channelId === channel.id);
-  const hasMessages = messages.length > 0 || optimisticMessages.length > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -291,7 +307,7 @@ function ChatPane({
         <h1 className="text-lg font-semibold">#{channel.name}</h1>
         {channel.description && <p className="text-sm text-muted-foreground">{channel.description}</p>}
       </div>
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div ref={messageContainerRef} className="flex-1 overflow-y-auto px-6 py-4">
         {isLoadingMessages ? (
           <LoadingMessages />
         ) : hasMessages ? (
@@ -398,6 +414,7 @@ function MessageComposer({
 
   const trimmed = draft.trim();
   const canSubmit = isOnline && trimmed.length > 0 && !isSubmitting;
+  const remainingCharacters = MAX_MESSAGE_LENGTH - draft.length;
 
   const performSubmit = useCallback(async () => {
     if (!canSubmit) {
@@ -410,7 +427,8 @@ function MessageComposer({
       setDraft('');
     } catch (sendError) {
       console.error('Failed to send message', sendError);
-      setError('Something went wrong sending your message. Try again.');
+      const errorMessage = normaliseSendError(sendError);
+      setError(errorMessage);
     } finally {
       setIsSubmitting(false);
     }
@@ -443,24 +461,52 @@ function MessageComposer({
         onKeyDown={handleKeyDown}
         rows={2}
         placeholder="Write a message"
+        maxLength={MAX_MESSAGE_LENGTH}
         className="w-full resize-none rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
       />
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground">{statusLabel}</span>
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
-            isSubmitting ? 'cursor-progress' : ''
-          }`}
-        >
-          {isSubmitting ? 'Sending…' : 'Send'}
-        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">{remainingCharacters} left</span>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
+              isSubmitting ? 'cursor-progress' : ''
+            }`}
+          >
+            {isSubmitting ? 'Sending…' : 'Send'}
+          </button>
+        </div>
       </div>
-      {error && <p className="text-xs text-red-500">{error}</p>}
-      {!isOnline && <p className="text-xs text-yellow-600">You are offline. Messages will resume once you reconnect.</p>}
+      {error && (
+        <p className="text-xs text-red-500" role="alert" aria-live="assertive">
+          {error}
+        </p>
+      )}
+      {!isOnline && (
+        <p className="text-xs text-yellow-600" role="status" aria-live="polite">
+          You are offline. Messages will resume once you reconnect.
+        </p>
+      )}
     </form>
   );
+}
+
+function normaliseSendError(error: unknown): string {
+  if (error instanceof Error) {
+    const message = error.message ?? '';
+    if (message.includes('EMPTY_MESSAGE')) {
+      return 'Message cannot be empty.';
+    }
+    if (message.includes('MESSAGE_TOO_LONG')) {
+      return `Message is too long. Keep it under ${MAX_MESSAGE_LENGTH} characters.`;
+    }
+    if (message.includes('NOT_AUTHORIZED')) {
+      return 'You do not have access to send messages in this channel.';
+    }
+  }
+  return 'Something went wrong sending your message. Try again.';
 }
 
 function EmptyChannelState({ viewer }: { viewer: ViewerSummary }) {
@@ -468,8 +514,7 @@ function EmptyChannelState({ viewer }: { viewer: ViewerSummary }) {
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
       <h2 className="text-lg font-semibold">Welcome{viewer?.name ? `, ${viewer.name}` : ''}!</h2>
       <p className="max-w-sm text-sm text-muted-foreground">
-        Seed a channel via the Phase 1 setup mutation to see your live chat history. The new layout is ready to stream
-        messages once they exist.
+        Create or seed a channel to unlock the conversation. Once one exists, messages sync here instantly for everyone in the workspace.
       </p>
     </div>
   );
@@ -479,9 +524,7 @@ function MessagesEmptyState({ channelName }: { channelName: string }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-muted-foreground">
       <h3 className="text-sm font-medium">No messages in #{channelName} yet</h3>
-      <p className="max-w-sm text-sm">
-        The composer below will send the first message in the next step.
-      </p>
+      <p className="max-w-sm text-sm">Drop a message below to kick off the chat.</p>
     </div>
   );
 }
