@@ -61,7 +61,7 @@ produce up to three short follow-up prompt suggestions. Respond with JSON in the
 const RECAP_SYSTEM_PROMPT = `You are a concise learning companion. Summarize the learner's progress in under 120 words, reinforcing completed goals
 and highlighting one suggestion for next time.`;
 
-async function callMistral({ ctx, model, temperature, maxTokens, systemPrompt, messages }: CallMistralOptions) {
+async function callMistral({ ctx: _ctx, model, temperature, maxTokens, systemPrompt, messages }: CallMistralOptions) {
   const apiKey = process.env.MISTRAL_API_KEY;
   if (!apiKey) {
     throw new ConvexError('MISTRAL_API_KEY_NOT_CONFIGURED');
@@ -72,11 +72,12 @@ async function callMistral({ ctx, model, temperature, maxTokens, systemPrompt, m
     ? [{ role: 'system', content: systemPrompt }, ...messages]
     : messages;
 
-  const response = await ctx.fetch(`${baseUrl}/chat/completions`, {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      Accept: 'application/json',
     },
     body: JSON.stringify({
       model: model ?? DEFAULT_MODEL,
