@@ -2,9 +2,36 @@
 
 import { Authenticated, Unauthenticated, useMutation, useQuery } from 'convex/react';
 import { api } from '../convex/_generated/api';
-import Link from 'next/link';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import type { User } from '@workos-inc/node';
+import { useEffect, useMemo } from 'react';
+
+type DerivedProfile = {
+  email?: string;
+  name?: string;
+  avatarUrl?: string;
+};
+
+function deriveProfileFields(user: User | null | undefined): DerivedProfile {
+  if (!user) {
+    return {};
+  }
+  const first = (user as Record<string, unknown>).firstName;
+  const last = (user as Record<string, unknown>).lastName;
+  const nameParts = [first, last]
+    .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+    .map((part) => part.trim());
+  const email = typeof user.email === 'string' && user.email.length > 0 ? user.email : undefined;
+  const name = nameParts.length > 0 ? nameParts.join(' ') : email;
+  const avatarCandidate = (user as Record<string, unknown>).profilePictureUrl ?? (user as Record<string, unknown>).photoUrl;
+  const avatarUrl = typeof avatarCandidate === 'string' && avatarCandidate.length > 0 ? avatarCandidate : undefined;
+
+  return {
+    email,
+    name: name ?? undefined,
+    avatarUrl,
+  };
+}
 
 export default function Home() {
   const { user, signOut } = useAuth();
@@ -12,11 +39,11 @@ export default function Home() {
   return (
     <>
       <header className="sticky top-0 z-10 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center">
-        Convex + Next.js + WorkOS
+        Vibecoursing
         {user && <UserMenu user={user} onSignOut={signOut} />}
       </header>
       <main className="p-8 flex flex-col gap-8">
-        <h1 className="text-4xl font-bold text-center">Convex + Next.js + WorkOS</h1>
+        <h1 className="text-4xl font-bold text-center">Team chat workspace</h1>
         <Authenticated>
           <Content />
         </Authenticated>
@@ -31,7 +58,7 @@ export default function Home() {
 function SignInForm() {
   return (
     <div className="flex flex-col gap-8 w-96 mx-auto">
-      <p>Log in to see the numbers</p>
+      <p>Log in to explore the shared workspace.</p>
       <a href="/sign-in">
         <button className="bg-foreground text-background px-4 py-2 rounded-md">Sign in</button>
       </a>
@@ -43,86 +70,115 @@ function SignInForm() {
 }
 
 function Content() {
-  const { viewer, numbers } =
-    useQuery(api.myFunctions.listNumbers, {
-      count: 10,
-    }) ?? {};
-  const addNumber = useMutation(api.myFunctions.addNumber);
+  const { user } = useAuth();
+  const syncUserProfile = useMutation(api.chat.syncUserProfile);
+  const derivedProfile = useMemo(() => deriveProfileFields(user), [user]);
 
-  if (viewer === undefined || numbers === undefined) {
-    return <div className="mx-auto"></div>;
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    void syncUserProfile({
+      email: derivedProfile.email,
+      name: derivedProfile.name,
+      avatarUrl: derivedProfile.avatarUrl,
+    });
+  }, [user, derivedProfile.email, derivedProfile.name, derivedProfile.avatarUrl, syncUserProfile]);
+
+  const bootstrap = useQuery(api.chat.bootstrap);
+  const activeChannelId = bootstrap?.channels?.[0]?.id;
+  const messagesResult = useQuery(api.chat.listMessages, activeChannelId ? { channelId: activeChannelId } : 'skip');
+
+  if (!bootstrap) {
+    return <div className="mx-auto text-sm text-muted-foreground">Loading workspace…</div>;
   }
 
+  const { viewer, channels } = bootstrap;
+  const activeChannel = channels[0] ?? null;
+  const messages = messagesResult ?? [];
+
   return (
-    <div className="flex flex-col gap-8 max-w-lg mx-auto">
-      <p>Welcome {viewer ?? 'Anonymous'}!</p>
-      <p>
-        Click the button below and open this page in another window - this data is persisted in the Convex cloud
-        database!
-      </p>
-      <p>
-        <button
-          className="bg-foreground text-background text-sm px-4 py-2 rounded-md"
-          onClick={() => {
-            void addNumber({ value: Math.floor(Math.random() * 10) });
-          }}
-        >
-          Add a random number
-        </button>
-      </p>
-      <p>Numbers: {numbers?.length === 0 ? 'Click the button!' : (numbers?.join(', ') ?? '...')}</p>
-      <p>
-        Edit{' '}
-        <code className="text-sm font-bold font-mono bg-slate-200 dark:bg-slate-800 px-1 py-0.5 rounded-md">
-          convex/myFunctions.ts
-        </code>{' '}
-        to change your backend
-      </p>
-      <p>
-        Edit{' '}
-        <code className="text-sm font-bold font-mono bg-slate-200 dark:bg-slate-800 px-1 py-0.5 rounded-md">
-          app/page.tsx
-        </code>{' '}
-        to change your frontend
-      </p>
-      <p>
-        See the{' '}
-        <Link href="/server" className="underline hover:no-underline">
-          /server route
-        </Link>{' '}
-        for an example of loading data in a server component
-      </p>
-      <div className="flex flex-col">
+    <div className="flex flex-col gap-8 max-w-3xl mx-auto w-full">
+      <section className="flex flex-col gap-2 bg-slate-200 dark:bg-slate-800 p-4 rounded-md">
+        <h2 className="text-xl font-semibold">Welcome{viewer?.name ? `, ${viewer.name}` : ''}!</h2>
+        <p className="text-sm text-muted-foreground">
+          WorkOS is already handling authentication. Phase 1 focuses on making sure your Convex data layer is ready for
+          real chat traffic.
+        </p>
+      </section>
+
+      <section className="flex flex-col gap-3 bg-slate-200 dark:bg-slate-800 p-4 rounded-md">
+        <h3 className="text-lg font-semibold">Channels</h3>
+        {channels.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No channels yet—finish the setup mutation to see the default workspace.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {channels.map((channel) => (
+              <li
+                key={channel.id}
+                className={`flex flex-col rounded-md border px-3 py-2 text-sm ${
+                  channel.id === activeChannel?.id ? 'border-foreground' : 'border-transparent'
+                }`}
+              >
+                <span className="font-medium">#{channel.name}</span>
+                {channel.description && <span className="text-muted-foreground">{channel.description}</span>}
+                {channel.isPrivate && <span className="text-xs text-muted-foreground">Private</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-3 bg-slate-200 dark:bg-slate-800 p-4 rounded-md">
+        <h3 className="text-lg font-semibold">Latest in #{activeChannel?.name ?? 'workspace'}</h3>
+        {activeChannel === null ? (
+          <p className="text-sm text-muted-foreground">Create or seed a channel to see conversation history.</p>
+        ) : messages.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No messages yet—Phase 2 will layer the composer and live updates.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {messages.map((message) => (
+              <li key={message._id} className="rounded-md bg-background px-3 py-2 text-sm">
+                <span className="font-medium">{message.authorId}</span>
+                <span className="mx-2 text-xs text-muted-foreground">
+                  {new Date(message.sentAt).toLocaleString()}
+                </span>
+                <p>{message.body}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="flex flex-col">
         <p className="text-lg font-bold">Useful resources:</p>
         <div className="flex gap-2">
           <div className="flex flex-col gap-2 w-1/2">
             <ResourceCard
               title="Convex docs"
-              description="Read comprehensive documentation for all Convex features."
+              description="Reference for schemas, queries, and mutations."
               href="https://docs.convex.dev/home"
             />
             <ResourceCard
               title="Stack articles"
-              description="Learn about best practices, use cases, and more from a growing
-            collection of articles, videos, and walkthroughs."
-              href="https://www.typescriptlang.org/docs/handbook/2/basic-types.html"
+              description="Deep dives on Convex architecture decisions."
+              href="https://stack.convex.dev"
             />
           </div>
           <div className="flex flex-col gap-2 w-1/2">
             <ResourceCard
               title="Templates"
-              description="Browse our collection of templates to get started quickly."
+              description="Jump-start prototypes with real-world patterns."
               href="https://www.convex.dev/templates"
             />
             <ResourceCard
               title="Discord"
-              description="Join our developer community to ask questions, trade tips & tricks,
-            and show off your projects."
+              description="Visit the Convex community for help and inspiration."
               href="https://www.convex.dev/community"
             />
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
@@ -139,9 +195,10 @@ function ResourceCard({ title, description, href }: { title: string; description
 }
 
 function UserMenu({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+  const derivedProfile = useMemo(() => deriveProfileFields(user), [user]);
   return (
     <div className="flex items-center gap-2">
-      <span className="text-sm">{user.email}</span>
+      <span className="text-sm">{derivedProfile.email ?? 'Unknown user'}</span>
       <button onClick={onSignOut} className="bg-red-500 text-white px-3 py-1 rounded-md text-sm hover:bg-red-600">
         Sign out
       </button>
