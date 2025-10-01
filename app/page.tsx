@@ -6,7 +6,7 @@ import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import type { User } from '@workos-inc/node';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Id } from '@/convex/_generated/dataModel';
+import type { Doc, Id } from '@/convex/_generated/dataModel';
 
 type DerivedProfile = {
   email?: string;
@@ -26,6 +26,13 @@ type ChannelSummary = {
   name: string;
   description: string | null;
   isPrivate: boolean;
+};
+
+type PendingMessage = {
+  clientId: string;
+  channelId: Id<'channels'>;
+  body: string;
+  createdAt: number;
 };
 
 function deriveProfileFields(user: User | null | undefined): DerivedProfile {
@@ -65,6 +72,7 @@ export default function Home() {
 function Content() {
   const { user, signOut } = useAuth();
   const syncUserProfile = useMutation(api.chat.syncUserProfile);
+  const sendMessage = useMutation(api.chat.sendMessage);
   const derivedProfile = useMemo(() => deriveProfileFields(user), [user]);
 
   useEffect(() => {
@@ -81,6 +89,7 @@ function Content() {
   const bootstrap = useQuery(api.chat.bootstrap);
   const channels = useQuery(api.chat.listChannels);
   const [activeChannelId, setActiveChannelId] = useState<Id<'channels'> | null>(null);
+  const [pendingMessages, setPendingMessages] = useState<PendingMessage[]>([]);
 
   useEffect(() => {
     if (channels === undefined) {
@@ -100,6 +109,32 @@ function Content() {
   const handleSelectChannel = useCallback((channelId: Id<'channels'>) => {
     setActiveChannelId((current) => (current === channelId ? current : channelId));
   }, []);
+
+  const handleSendMessage = useCallback(
+    async (channelId: Id<'channels'>, body: string) => {
+      const trimmed = body.trim();
+      if (trimmed.length === 0) {
+        return;
+      }
+      const clientId = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+      const createdAt = Date.now();
+      const optimisticMessage: PendingMessage = {
+        clientId,
+        channelId,
+        body: trimmed,
+        createdAt,
+      };
+      setPendingMessages((current) => [...current, optimisticMessage]);
+      try {
+        await sendMessage({ channelId, body: trimmed });
+        setPendingMessages((current) => current.filter((message) => message.clientId !== clientId));
+      } catch (error) {
+        setPendingMessages((current) => current.filter((message) => message.clientId !== clientId));
+        throw error;
+      }
+    },
+    [sendMessage]
+  );
 
   const messagesResult = useQuery(
     api.chat.listMessages,
@@ -136,6 +171,8 @@ function Content() {
           viewer={viewer}
           channel={activeChannel}
           messages={messagesResult ?? []}
+          pendingMessages={pendingMessages}
+          onSendMessage={handleSendMessage}
           isLoadingMessages={messagesResult === undefined && activeChannel !== null}
         />
       }
@@ -230,16 +267,23 @@ function ChatPane({
   viewer,
   channel,
   messages,
+  pendingMessages,
+  onSendMessage,
   isLoadingMessages,
 }: {
   viewer: ViewerSummary;
   channel: ChannelSummary | null;
-  messages: ReadonlyArray<{ _id: string; body: string; authorId: string; sentAt: number }>;
+  messages: Doc<'messages'>[];
+  pendingMessages: PendingMessage[];
+  onSendMessage: (channelId: Id<'channels'>, body: string) => Promise<void>;
   isLoadingMessages: boolean;
 }) {
   if (!channel) {
     return <EmptyChannelState viewer={viewer} />;
   }
+
+  const optimisticMessages = pendingMessages.filter((message) => message.channelId === channel.id);
+  const hasMessages = messages.length > 0 || optimisticMessages.length > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -250,14 +294,14 @@ function ChatPane({
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {isLoadingMessages ? (
           <LoadingMessages />
-        ) : messages.length === 0 ? (
-          <MessagesEmptyState channelName={channel.name} />
+        ) : hasMessages ? (
+          <MessageList messages={messages} pendingMessages={optimisticMessages} />
         ) : (
-          <MessageList messages={messages} />
+          <MessagesEmptyState channelName={channel.name} />
         )}
       </div>
       <div className="border-t border-slate-200 px-6 py-4 dark:border-slate-800">
-        <MessageComposerPlaceholder />
+        <MessageComposer channelId={channel.id} onSend={onSendMessage} />
       </div>
     </div>
   );
@@ -279,8 +323,10 @@ function ChatPaneSkeleton() {
 
 function MessageList({
   messages,
+  pendingMessages,
 }: {
-  messages: ReadonlyArray<{ _id: string; body: string; authorId: string; sentAt: number }>;
+  messages: Doc<'messages'>[];
+  pendingMessages: PendingMessage[];
 }) {
   return (
     <ul className="flex flex-col gap-3 text-sm">
@@ -294,6 +340,18 @@ function MessageList({
             <time dateTime={new Date(message.sentAt).toISOString()}>
               {new Date(message.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </time>
+          </div>
+          <p className="mt-1 text-sm text-foreground">{message.body}</p>
+        </li>
+      ))}
+      {pendingMessages.map((message) => (
+        <li
+          key={message.clientId}
+          className="rounded-md border border-dashed border-slate-300 bg-muted/40 px-4 py-3 text-sm text-muted-foreground shadow-sm dark:border-slate-700/70"
+        >
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-medium text-foreground">You</span>
+            <span className="text-muted-foreground">Sending…</span>
           </div>
           <p className="mt-1 text-sm text-foreground">{message.body}</p>
         </li>
@@ -312,12 +370,96 @@ function LoadingMessages() {
   );
 }
 
-function MessageComposerPlaceholder() {
+function MessageComposer({
+  channelId,
+  onSend,
+}: {
+  channelId: Id<'channels'>;
+  onSend: (channelId: Id<'channels'>, body: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const trimmed = draft.trim();
+  const canSubmit = isOnline && trimmed.length > 0 && !isSubmitting;
+
+  const performSubmit = useCallback(async () => {
+    if (!canSubmit) {
+      return;
+    }
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await onSend(channelId, trimmed);
+      setDraft('');
+    } catch (sendError) {
+      console.error('Failed to send message', sendError);
+      setError('Something went wrong sending your message. Try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [canSubmit, channelId, onSend, trimmed]);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await performSubmit();
+  };
+
+  const handleKeyDown = async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      await performSubmit();
+    }
+  };
+
+  const statusLabel = !isOnline
+    ? 'Offline — reconnect to send messages.'
+    : 'Press ⌘+Enter (or Ctrl+Enter) to send';
+
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-dashed border-slate-300 bg-muted/30 px-4 py-3 text-sm text-muted-foreground dark:border-slate-700">
-      <span className="font-medium text-foreground">Message composer coming soon</span>
-      <p>Phase 2 will hook this area to the Convex `sendMessage` mutation with optimistic updates.</p>
-    </div>
+    <form
+      onSubmit={handleSubmit}
+      className="flex flex-col gap-2 rounded-md border border-slate-200 bg-background p-3 shadow-sm dark:border-slate-700"
+    >
+      <textarea
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={handleKeyDown}
+        rows={2}
+        placeholder="Write a message"
+        className="w-full resize-none rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+      />
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">{statusLabel}</span>
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
+            isSubmitting ? 'cursor-progress' : ''
+          }`}
+        >
+          {isSubmitting ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {!isOnline && <p className="text-xs text-yellow-600">You are offline. Messages will resume once you reconnect.</p>}
+    </form>
   );
 }
 
