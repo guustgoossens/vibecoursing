@@ -81,6 +81,27 @@ function cleanString(value?: string | null) {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+function extractJsonPayload(raw: string): string {
+  const trimmed = raw.trim();
+  const fencedMatch = trimmed.match(/```(?:json)?\n([\s\S]+?)```/i);
+  if (fencedMatch) {
+    return fencedMatch[1].trim();
+  }
+
+  if (trimmed.startsWith('```')) {
+    const withoutFence = trimmed.replace(/^```[a-zA-Z0-9]*\n?/, '').replace(/```$/, '');
+    return withoutFence.trim();
+  }
+
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1).trim();
+  }
+
+  return trimmed;
+}
+
 function detectCoveredTerms(body: string, terms: Doc<'sessionTerms'>[]): Doc<'sessionTerms'>[] {
   const lowerBody = body.toLowerCase();
   const matches: Doc<'sessionTerms'>[] = [];
@@ -518,8 +539,9 @@ export const generatePlan = action({
     });
 
     let plan: unknown;
+    const jsonPayload = extractJsonPayload(content);
     try {
-      plan = JSON.parse(content);
+      plan = JSON.parse(jsonPayload);
     } catch (error) {
       console.error('Plan generation JSON parse failed', { error, content });
       throw new ConvexError('MISTRAL_PLAN_PARSE_FAILED');
