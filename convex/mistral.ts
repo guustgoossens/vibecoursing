@@ -1,4 +1,5 @@
-import { action } from './_generated/server';
+import { internal } from './_generated/api';
+import { action, internalMutation, internalQuery } from './_generated/server';
 import type { ActionCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { ConvexError, v } from 'convex/values';
@@ -80,13 +81,6 @@ function cleanString(value?: string | null) {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
-async function fetchUserByExternalId(ctx: ActionCtx, externalId: string) {
-  return ctx.db
-    .query('users')
-    .withIndex('by_external_id', (q) => q.eq('externalId', externalId))
-    .unique();
-}
-
 function detectCoveredTerms(body: string, terms: Doc<'sessionTerms'>[]): Doc<'sessionTerms'>[] {
   const lowerBody = body.toLowerCase();
   const matches: Doc<'sessionTerms'>[] = [];
@@ -141,6 +135,275 @@ function buildPlanContext(session: Doc<'learningSessions'>, phaseProgress: Phase
     })),
   };
 }
+
+const mistralUsageValidator = v.object({
+  promptTokens: v.optional(v.number()),
+  completionTokens: v.optional(v.number()),
+  totalTokens: v.optional(v.number()),
+});
+
+type SessionContextForTurn = {
+  session: Doc<'learningSessions'>;
+  phases: Doc<'sessionPhases'>[];
+  terms: Doc<'sessionTerms'>[];
+  transcript: Doc<'sessionMessages'>[];
+};
+
+type LoggedUserMessage = {
+  message: {
+    id: Id<'sessionMessages'>;
+    body: string;
+    createdAt: number;
+  };
+};
+
+type RecordedAssistantTurn = {
+  session: {
+    id: Id<'learningSessions'>;
+    topic: string;
+    completedTerms: number;
+    totalTerms: number;
+    completedPhases: number;
+    totalPhases: number;
+    currentPhaseIndex: number | null;
+    updatedAt: number;
+  };
+  assistantMessage: {
+    id: Id<'sessionMessages'>;
+    body: string;
+    createdAt: number;
+    termsCovered: string[];
+    usage: MistralUsage | null;
+  };
+  newlyCoveredTerms: string[];
+  phaseProgress: PhaseProgress[];
+};
+
+type SessionTurnResult = {
+  session: RecordedAssistantTurn['session'];
+  userMessage: LoggedUserMessage['message'];
+  assistantMessage: RecordedAssistantTurn['assistantMessage'];
+  newlyCoveredTerms: string[];
+  phaseProgress: PhaseProgress[];
+};
+
+export const getUserByExternalId = internalQuery({
+  args: {
+    externalId: v.string(),
+  },
+  handler: async (ctx, args): Promise<Doc<'users'> | null> => {
+    return ctx.db
+      .query('users')
+      .withIndex('by_external_id', (q) => q.eq('externalId', args.externalId))
+      .unique();
+  },
+});
+
+export const getSessionContextForTurn = internalQuery({
+  args: {
+    sessionId: v.id('learningSessions'),
+    userId: v.id('users'),
+  },
+  handler: async (ctx, args): Promise<SessionContextForTurn> => {
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== args.userId) {
+      throw new ConvexError('SESSION_NOT_FOUND');
+    }
+
+    const phases = await ctx.db
+      .query('sessionPhases')
+      .withIndex('by_session_index', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+    phases.sort((a, b) => a.index - b.index);
+
+    const terms = await ctx.db
+      .query('sessionTerms')
+      .withIndex('by_session', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+
+    const transcript = await ctx.db
+      .query('sessionMessages')
+      .withIndex('by_session_createdAt', (q) => q.eq('sessionId', args.sessionId))
+      .order('desc')
+      .take(40);
+    transcript.reverse();
+
+    return {
+      session,
+      phases,
+      terms,
+      transcript,
+    };
+  },
+});
+
+export const logSessionUserMessage = internalMutation({
+  args: {
+    sessionId: v.id('learningSessions'),
+    userId: v.id('users'),
+    body: v.string(),
+    followUpId: v.optional(v.id('sessionFollowUps')),
+  },
+  handler: async (ctx, args): Promise<LoggedUserMessage> => {
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== args.userId) {
+      throw new ConvexError('SESSION_NOT_FOUND');
+    }
+
+    const trimmed = cleanString(args.body);
+    if (!trimmed) {
+      throw new ConvexError('EMPTY_MESSAGE');
+    }
+    if (trimmed.length > 2000) {
+      throw new ConvexError('MESSAGE_TOO_LONG');
+    }
+
+    const createdAt = Date.now();
+    const messageId = await ctx.db.insert('sessionMessages', {
+      sessionId: session._id,
+      role: 'user',
+      body: trimmed,
+      createdAt,
+    });
+
+    if (args.followUpId) {
+      const followUp = await ctx.db.get(args.followUpId);
+      if (!followUp || followUp.sessionId !== session._id) {
+        throw new ConvexError('FOLLOW_UP_NOT_FOUND');
+      }
+      await ctx.db.patch(followUp._id, { usedAt: createdAt });
+    }
+
+    return {
+      message: {
+        id: messageId,
+        body: trimmed,
+        createdAt,
+      },
+    };
+  },
+});
+
+export const recordAssistantTurn = internalMutation({
+  args: {
+    sessionId: v.id('learningSessions'),
+    assistantBody: v.string(),
+    usage: v.optional(mistralUsageValidator),
+  },
+  handler: async (ctx, args): Promise<RecordedAssistantTurn> => {
+    const session = await ctx.db.get(args.sessionId);
+    if (!session) {
+      throw new ConvexError('SESSION_NOT_FOUND');
+    }
+
+    const assistantBody = cleanString(args.assistantBody);
+    if (!assistantBody) {
+      throw new ConvexError('EMPTY_MESSAGE');
+    }
+
+    const phaseDocs = await ctx.db
+      .query('sessionPhases')
+      .withIndex('by_session_index', (q) => q.eq('sessionId', session._id))
+      .collect();
+    phaseDocs.sort((a, b) => a.index - b.index);
+
+    const termDocs = await ctx.db
+      .query('sessionTerms')
+      .withIndex('by_session', (q) => q.eq('sessionId', session._id))
+      .collect();
+
+    const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
+    for (const term of termDocs) {
+      termState.set(term._id, term);
+    }
+
+    const coveredTerms = detectCoveredTerms(assistantBody, termDocs);
+    const coveredTermNames = Array.from(new Set(coveredTerms.map((term) => term.term)));
+    const newlyCoveredTerms: string[] = [];
+
+    const assistantCreatedAt = Date.now();
+    for (const term of coveredTerms) {
+      const current = termState.get(term._id);
+      if (!current) {
+        continue;
+      }
+      const exposureCount = (current.exposureCount ?? 0) + 1;
+      const firstCoveredAt = current.firstCoveredAt ?? assistantCreatedAt;
+      await ctx.db.patch(term._id, {
+        exposureCount,
+        firstCoveredAt,
+      });
+      termState.set(term._id, {
+        ...current,
+        exposureCount,
+        firstCoveredAt,
+      });
+      if (!current.firstCoveredAt) {
+        newlyCoveredTerms.push(term.term);
+      }
+    }
+
+    const assistantMessageId = await ctx.db.insert('sessionMessages', {
+      sessionId: session._id,
+      role: 'assistant',
+      body: assistantBody,
+      createdAt: assistantCreatedAt,
+      termsCovered: coveredTermNames,
+      promptTokens: args.usage?.promptTokens,
+      completionTokens: args.usage?.completionTokens,
+      totalTokens: args.usage?.totalTokens,
+    });
+
+    const usagePayload: MistralUsage | null = args.usage
+      ? {
+          promptTokens: args.usage.promptTokens,
+          completionTokens: args.usage.completionTokens,
+          totalTokens: args.usage.totalTokens,
+        }
+      : null;
+
+    const phaseProgressAfter = buildPhaseProgress(phaseDocs, termState);
+    const completedTermsCount = Array.from(termState.values()).filter((term) => term.firstCoveredAt !== undefined)
+      .length;
+    const completedPhasesCount = phaseProgressAfter.filter((phase) => phase.isComplete).length;
+    const nextPhase = phaseProgressAfter.find((phase) => !phase.isComplete);
+    const currentPhaseIndex = nextPhase ? nextPhase.index : null;
+
+    await ctx.db.patch(session._id, {
+      updatedAt: assistantCreatedAt,
+      completedTerms: completedTermsCount,
+      completedPhases: completedPhasesCount,
+      currentPhaseIndex: currentPhaseIndex ?? undefined,
+    });
+
+    const updatedSession = await ctx.db.get(session._id);
+    if (!updatedSession) {
+      throw new ConvexError('SESSION_NOT_FOUND_AFTER_UPDATE');
+    }
+
+    return {
+      session: {
+        id: updatedSession._id,
+        topic: updatedSession.topic,
+        completedTerms: updatedSession.completedTerms,
+        totalTerms: updatedSession.totalTerms,
+        completedPhases: updatedSession.completedPhases,
+        totalPhases: updatedSession.totalPhases,
+        currentPhaseIndex: updatedSession.currentPhaseIndex ?? null,
+        updatedAt: updatedSession.updatedAt,
+      },
+      assistantMessage: {
+        id: assistantMessageId,
+        body: assistantBody,
+        createdAt: assistantCreatedAt,
+        termsCovered: coveredTermNames,
+        usage: usagePayload,
+      },
+      newlyCoveredTerms,
+      phaseProgress: phaseProgressAfter,
+    };
+  },
+});
 
 async function callMistral({ ctx: _ctx, model, temperature, maxTokens, systemPrompt, messages }: CallMistralOptions) {
   const apiKey = process.env.MISTRAL_API_KEY;
@@ -333,28 +596,17 @@ export const runSessionTurn = action({
     followUpId: v.optional(v.id('sessionFollowUps')),
     temperature: v.optional(v.number()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<SessionTurnResult> => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new ConvexError('NOT_AUTHENTICATED');
     }
 
-    const user = await fetchUserByExternalId(ctx, identity.subject);
+    const user = (await ctx.runQuery(internal.mistral.getUserByExternalId, {
+      externalId: identity.subject,
+    })) as Doc<'users'> | null;
     if (!user) {
       throw new ConvexError('USER_PROFILE_MISSING');
-    }
-
-    const session = await ctx.db.get(args.sessionId);
-    if (!session || session.userId !== user._id) {
-      throw new ConvexError('SESSION_NOT_FOUND');
-    }
-
-    let followUp: Doc<'sessionFollowUps'> | null = null;
-    if (args.followUpId) {
-      followUp = await ctx.db.get(args.followUpId);
-      if (!followUp || followUp.sessionId !== session._id) {
-        throw new ConvexError('FOLLOW_UP_NOT_FOUND');
-      }
     }
 
     const trimmedPrompt = cleanString(args.prompt);
@@ -362,48 +614,33 @@ export const runSessionTurn = action({
       throw new ConvexError('EMPTY_MESSAGE');
     }
 
-    const userCreatedAt = Date.now();
-    const userMessageId = await ctx.db.insert('sessionMessages', {
-      sessionId: session._id,
-      role: 'user',
+    const sessionContext = (await ctx.runQuery(internal.mistral.getSessionContextForTurn, {
+      sessionId: args.sessionId,
+      userId: user._id,
+    })) as SessionContextForTurn;
+
+    const { session, phases, terms, transcript } = sessionContext;
+
+    const userMessageResult = (await ctx.runMutation(internal.mistral.logSessionUserMessage, {
+      sessionId: args.sessionId,
+      userId: user._id,
       body: trimmedPrompt,
-      createdAt: userCreatedAt,
-    });
-
-    if (followUp) {
-      await ctx.db.patch(followUp._id, { usedAt: userCreatedAt });
-    }
-
-    const phaseDocs = await ctx.db
-      .query('sessionPhases')
-      .withIndex('by_session_index', (q) => q.eq('sessionId', session._id))
-      .collect();
-    phaseDocs.sort((a, b) => a.index - b.index);
-
-    const termDocs = await ctx.db
-      .query('sessionTerms')
-      .withIndex('by_session', (q) => q.eq('sessionId', session._id))
-      .collect();
+      followUpId: args.followUpId ?? undefined,
+    })) as LoggedUserMessage;
 
     const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
-    for (const term of termDocs) {
+    for (const term of terms) {
       termState.set(term._id, term);
     }
 
-    const phaseProgressBefore = buildPhaseProgress(phaseDocs, termState);
+    const phaseProgressBefore = buildPhaseProgress(phases, termState);
     const planContext = buildPlanContext(session, phaseProgressBefore);
 
-    const transcriptDocs = await ctx.db
-      .query('sessionMessages')
-      .withIndex('by_session_createdAt', (q) => q.eq('sessionId', session._id))
-      .order('desc')
-      .take(40);
-    transcriptDocs.reverse();
-
-    const transcriptMessages: ChatMessage[] = transcriptDocs.map((message) => ({
+    const transcriptMessages: ChatMessage[] = transcript.map((message) => ({
       role: message.role,
       content: message.body,
     }));
+    transcriptMessages.push({ role: 'user', content: trimmedPrompt });
 
     const planMessage: ChatMessage | null = planContext
       ? {
@@ -422,89 +659,20 @@ export const runSessionTurn = action({
       systemPrompt:
         'You are Vibecoursing, an enthusiastic and empathetic learning companion. Provide actionable guidance, keep replies under 180 words, and favour follow-up questions that reinforce key terms.',
     });
-
     const assistantBody = content.trim();
-    const assistantCreatedAt = Date.now();
-    const coveredTerms = detectCoveredTerms(assistantBody, termDocs);
-    const coveredTermNames = Array.from(new Set(coveredTerms.map((term) => term.term)));
-    const newlyCoveredTerms: string[] = [];
 
-    for (const term of coveredTerms) {
-      const currentState = termState.get(term._id);
-      if (!currentState) {
-        continue;
-      }
-      const exposureCount = (currentState.exposureCount ?? 0) + 1;
-      const firstCoveredAt = currentState.firstCoveredAt ?? assistantCreatedAt;
-      await ctx.db.patch(term._id, {
-        exposureCount,
-        firstCoveredAt,
-      });
-      termState.set(term._id, {
-        ...currentState,
-        exposureCount,
-        firstCoveredAt,
-      });
-      if (!currentState.firstCoveredAt) {
-        newlyCoveredTerms.push(term.term);
-      }
-    }
-
-    const assistantMessageId = await ctx.db.insert('sessionMessages', {
-      sessionId: session._id,
-      role: 'assistant',
-      body: assistantBody,
-      createdAt: assistantCreatedAt,
-      termsCovered: coveredTermNames,
-      promptTokens: usage?.promptTokens,
-      completionTokens: usage?.completionTokens,
-      totalTokens: usage?.totalTokens,
-    });
-
-    const phaseProgressAfter = buildPhaseProgress(phaseDocs, termState);
-    const completedTermsCount = Array.from(termState.values()).filter((term) => term.firstCoveredAt !== undefined)
-      .length;
-    const completedPhasesCount = phaseProgressAfter.filter((phase) => phase.isComplete).length;
-    const nextPhase = phaseProgressAfter.find((phase) => !phase.isComplete);
-    const currentPhaseIndex = nextPhase ? nextPhase.index : null;
-
-    await ctx.db.patch(session._id, {
-      updatedAt: assistantCreatedAt,
-      completedTerms: completedTermsCount,
-      completedPhases: completedPhasesCount,
-      currentPhaseIndex: currentPhaseIndex ?? undefined,
-    });
-
-    const updatedSession = await ctx.db.get(session._id);
-    if (!updatedSession) {
-      throw new ConvexError('SESSION_NOT_FOUND_AFTER_UPDATE');
-    }
+    const turnResult = (await ctx.runMutation(internal.mistral.recordAssistantTurn, {
+      sessionId: args.sessionId,
+      assistantBody,
+      usage: usage ?? undefined,
+    })) as RecordedAssistantTurn;
 
     return {
-      session: {
-        id: updatedSession._id,
-        topic: updatedSession.topic,
-        completedTerms: updatedSession.completedTerms,
-        totalTerms: updatedSession.totalTerms,
-        completedPhases: updatedSession.completedPhases,
-        totalPhases: updatedSession.totalPhases,
-        currentPhaseIndex: updatedSession.currentPhaseIndex ?? null,
-        updatedAt: updatedSession.updatedAt,
-      },
-      userMessage: {
-        id: userMessageId,
-        body: trimmedPrompt,
-        createdAt: userCreatedAt,
-      },
-      assistantMessage: {
-        id: assistantMessageId,
-        body: assistantBody,
-        createdAt: assistantCreatedAt,
-        termsCovered: coveredTermNames,
-        usage,
-      },
-      newlyCoveredTerms,
-      phaseProgress: phaseProgressAfter,
+      session: turnResult.session,
+      userMessage: userMessageResult.message,
+      assistantMessage: turnResult.assistantMessage,
+      newlyCoveredTerms: turnResult.newlyCoveredTerms,
+      phaseProgress: turnResult.phaseProgress,
     };
   },
 });
