@@ -80,6 +80,7 @@ type SessionPhaseProgress = {
   totalTerms: number;
   completedTerms: number;
   remainingTerms: string[];
+  coveredTerms: string[];
   isComplete: boolean;
 };
 
@@ -381,13 +382,15 @@ function SessionOverviewCard({
   session: SessionSummary;
   phaseProgress?: SessionPhaseProgress[];
 }) {
-  const phaseProgressRatio = session.totalPhases > 0 ? Math.round((session.completedPhases / session.totalPhases) * 100) : 0;
-  const termProgressRatio = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
+  const phasePercent = session.totalPhases > 0 ? Math.round((session.completedPhases / session.totalPhases) * 100) : 0;
+  const termPercent = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
   const nextPhase = phaseProgress?.find((phase) => !phase.isComplete) ?? null;
   const allPhasesComplete = phaseProgress ? phaseProgress.every((phase) => phase.isComplete) : false;
+  const learnedTerms = phaseProgress ? Array.from(new Set(phaseProgress.flatMap((phase) => phase.coveredTerms))) : [];
+  const displayedLearnedTerms = learnedTerms.slice(0, 24);
 
   return (
-    <div className="flex min-h-[420px] flex-col gap-4 rounded-md border border-slate-200 bg-background px-6 py-6 shadow-sm dark:border-slate-700">
+    <div className="flex min-h-[460px] flex-col gap-5 rounded-md border border-slate-200 bg-background px-6 py-6 shadow-sm dark:border-slate-700">
       <div>
         <h1 className="text-2xl font-semibold text-foreground">{session.topic}</h1>
         <p className="text-sm text-muted-foreground">
@@ -396,66 +399,168 @@ function SessionOverviewCard({
             : 'Phase status pending'}
         </p>
       </div>
+      {phaseProgress && (
+        <div className="space-y-3">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Overall progress</span>
+          <div className="space-y-3">
+            <ProgressStat
+              label="Phase progression"
+              percent={phasePercent}
+              detail={`${session.completedPhases}/${session.totalPhases}`}
+            />
+            <ProgressStat
+              label="Key terms covered"
+              percent={termPercent}
+              detail={`${session.completedTerms}/${session.totalTerms}`}
+            />
+          </div>
+        </div>
+      )}
       <div className="grid gap-4 md:grid-cols-2">
-        <SessionMetric label="Phases complete" value={`${session.completedPhases}/${session.totalPhases}`} hint={`${phaseProgressRatio}%`} />
-        <SessionMetric label="Key terms covered" value={`${session.completedTerms}/${session.totalTerms}`} hint={`${termProgressRatio}%`} />
-        <SessionMetric
+        <InfoField
           label="Created"
           value={new Date(session.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
         />
-        <SessionMetric
+        <InfoField
           label="Last updated"
           value={new Date(session.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
         />
       </div>
+      {phaseProgress && <PhaseProgressList phases={phaseProgress} />}
       {phaseProgress && (
-        <div className="rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Next focus</span>
-          {allPhasesComplete ? (
-            <p className="mt-2 text-sm text-foreground">All phases are complete. Keep practicing or spin up a new topic!</p>
-          ) : nextPhase ? (
-            <>
-              <p className="mt-2 text-sm font-medium text-foreground">{nextPhase.name}</p>
-              <p className="text-xs text-muted-foreground">{nextPhase.objective}</p>
-              {nextPhase.remainingTerms.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                  {nextPhase.remainingTerms.map((term) => (
+        <LearnedTermsSection
+          learnedTerms={displayedLearnedTerms}
+          nextPhase={nextPhase}
+          allComplete={allPhasesComplete}
+          hasMore={learnedTerms.length > displayedLearnedTerms.length}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProgressStat({
+  label,
+  percent,
+  detail,
+}: {
+  label: string;
+  percent: number;
+  detail: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{label}</span>
+        <span>{detail}</span>
+      </div>
+      <ProgressBar percent={percent} />
+    </div>
+  );
+}
+
+function ProgressBar({ percent }: { percent: number }) {
+  const clamped = Math.max(0, Math.min(100, percent));
+  return (
+    <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700">
+      <div className="h-2 rounded-full bg-foreground transition-all" style={{ width: `${clamped}%` }} />
+    </div>
+  );
+}
+
+function InfoField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+      <div className="mt-2 text-sm text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function PhaseProgressList({ phases }: { phases: SessionPhaseProgress[] }) {
+  return (
+    <div className="space-y-3 rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Phase summary</span>
+      <ul className="space-y-3">
+        {phases.map((phase) => {
+          const percent = phase.totalTerms > 0 ? Math.round((phase.completedTerms / phase.totalTerms) * 100) : 0;
+          return (
+            <li key={phase.index} className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">{phase.name}</span>
+                <span>
+                  {phase.completedTerms}/{phase.totalTerms}
+                </span>
+              </div>
+              <ProgressBar percent={percent} />
+              {phase.remainingTerms.length > 0 && (
+                <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                  {phase.remainingTerms.map((term) => (
                     <span
-                      key={term}
-                      className="rounded-full border border-slate-200 bg-muted/60 px-2 py-1 text-muted-foreground dark:border-slate-700"
+                      key={`${phase.index}-${term}`}
+                      className="rounded-full border border-slate-200 bg-muted/50 px-2 py-0.5 dark:border-slate-700"
                     >
                       {term}
                     </span>
                   ))}
                 </div>
               )}
-            </>
-          ) : (
-            <p className="mt-2 text-sm text-muted-foreground">Progress data is updating…</p>
-          )}
-        </div>
-      )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
 
-function SessionMetric({
-  label,
-  value,
-  hint,
+function LearnedTermsSection({
+  learnedTerms,
+  nextPhase,
+  allComplete,
+  hasMore,
 }: {
-  label: string;
-  value: string;
-  hint?: string;
+  learnedTerms: string[];
+  nextPhase: SessionPhaseProgress | null;
+  allComplete: boolean;
+  hasMore: boolean;
 }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-      <div className="mt-2 text-xl font-semibold text-foreground">{value}</div>
-      {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
+    <div className="space-y-3 rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Learned terms</span>
+      {learnedTerms.length > 0 ? (
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          {learnedTerms.map((term) => (
+            <span
+              key={`learned-${term}`}
+              className="rounded-full bg-emerald-500/10 px-2 py-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
+            >
+              {term}
+            </span>
+          ))}
+          {hasMore && (
+            <span className="rounded-full border border-slate-200 bg-muted/40 px-2 py-1 text-muted-foreground dark:border-slate-700">
+              + more terms tracked
+            </span>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">Complete a turn to start tracking learned terms.</p>
+      )}
+      <div className="rounded-md border border-dashed border-slate-200 bg-muted/40 p-3 text-xs text-muted-foreground dark:border-slate-700">
+        {allComplete ? (
+          <span>All phases are complete. Reflect on your progress or spin up a new topic when ready.</span>
+        ) : nextPhase ? (
+          <span>
+            Next focus: <span className="font-medium text-foreground">{nextPhase.name}</span>. {nextPhase.objective}
+          </span>
+        ) : (
+          <span>Progress data is updating…</span>
+        )}
+      </div>
     </div>
   );
 }
+
 
 function SessionTranscriptPanel({
   sessionId,
