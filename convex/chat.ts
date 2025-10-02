@@ -20,6 +20,47 @@ type ChannelSummary = {
   isPrivate: boolean;
 };
 
+type PlanPhaseInput = {
+  name: string;
+  objective: string;
+  keyTerms: string[];
+};
+
+type GeneratedPlanPayload = {
+  topic: string;
+  tone?: string;
+  summary?: string;
+  phases: PlanPhaseInput[];
+};
+
+type SessionSummary = {
+  id: Id<'learningSessions'>;
+  topic: string;
+  createdAt: number;
+  updatedAt: number;
+  currentPhaseIndex: number | null;
+  completedPhases: number;
+  totalPhases: number;
+  completedTerms: number;
+  totalTerms: number;
+};
+
+type SessionPhase = {
+  id: Id<'sessionPhases'>;
+  index: number;
+  name: string;
+  objective: string;
+  completedAt: number | null;
+};
+
+type SessionTerm = {
+  id: Id<'sessionTerms'>;
+  phaseIndex: number;
+  term: string;
+  firstCoveredAt: number | null;
+  exposureCount: number;
+};
+
 function cleanString(value?: string | null) {
   if (value === undefined || value === null) {
     return undefined;
@@ -112,6 +153,86 @@ async function listVisibleChannels(ctx: QueryCtx, user: Doc<'users'> | null): Pr
     }));
 }
 
+async function ensureUser(ctx: MutationCtx, identity: Identity): Promise<Doc<'users'>> {
+  const existing = await fetchUserBySubject(ctx, identity.subject);
+  if (existing) {
+    return existing;
+  }
+
+  const profile = normaliseProfile(identity, {});
+  const insertDoc: {
+    externalId: string;
+    email?: string;
+    name?: string;
+    avatarUrl?: string;
+  } = {
+    externalId: identity.subject,
+  };
+
+  if (profile.email !== undefined) {
+    insertDoc.email = profile.email;
+  }
+  if (profile.name !== undefined) {
+    insertDoc.name = profile.name;
+  }
+  if (profile.avatarUrl !== undefined) {
+    insertDoc.avatarUrl = profile.avatarUrl;
+  }
+
+  const userId = await ctx.db.insert('users', insertDoc);
+  await ensureDefaultChannel(ctx, userId);
+
+  const created = await ctx.db.get(userId);
+  if (!created) {
+    throw new ConvexError('USER_CREATION_FAILED');
+  }
+  return created;
+}
+
+function mapSessionDocToSummary(session: Doc<'learningSessions'>): SessionSummary {
+  return {
+    id: session._id,
+    topic: session.topic,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    currentPhaseIndex: session.currentPhaseIndex ?? null,
+    completedPhases: session.completedPhases,
+    totalPhases: session.totalPhases,
+    completedTerms: session.completedTerms,
+    totalTerms: session.totalTerms,
+  };
+}
+
+async function listSessionSummaries(ctx: QueryCtx, user: Doc<'users'>): Promise<SessionSummary[]> {
+  const sessions = await ctx.db
+    .query('learningSessions')
+    .withIndex('by_user_updatedAt', (q) => q.eq('userId', user._id))
+    .order('desc')
+    .collect();
+
+  return sessions.map(mapSessionDocToSummary);
+}
+
+function mapPhaseDoc(phase: Doc<'sessionPhases'>): SessionPhase {
+  return {
+    id: phase._id,
+    index: phase.index,
+    name: phase.name,
+    objective: phase.objective,
+    completedAt: phase.completedAt ?? null,
+  };
+}
+
+function mapTermDoc(term: Doc<'sessionTerms'>): SessionTerm {
+  return {
+    id: term._id,
+    phaseIndex: term.phaseIndex,
+    term: term.term,
+    firstCoveredAt: term.firstCoveredAt ?? null,
+    exposureCount: term.exposureCount ?? 0,
+  };
+}
+
 export const syncUserProfile = mutation({
   args: {
     email: v.optional(v.string()),
@@ -171,14 +292,15 @@ export const bootstrap = query({
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      return { viewer: null, channels: [] as ChannelSummary[] };
+      return { viewer: null, channels: [] as ChannelSummary[], sessions: [] as SessionSummary[] };
     }
 
     const user = await fetchUserBySubject(ctx, identity.subject);
     const viewer = await resolveViewer(user);
     const channels = await listVisibleChannels(ctx, user);
+    const sessions = user ? await listSessionSummaries(ctx, user) : [];
 
-    return { viewer, channels };
+    return { viewer, channels, sessions };
   },
 });
 
@@ -297,5 +419,190 @@ export const sendMessage = mutation({
     });
 
     return { messageId };
+  },
+});
+
+export const sessionBootstrap = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return { viewer: null, sessions: [] as SessionSummary[] };
+    }
+
+    const user = await fetchUserBySubject(ctx, identity.subject);
+    if (!user) {
+      return { viewer: null, sessions: [] as SessionSummary[] };
+    }
+
+    const viewer = await resolveViewer(user);
+    const sessions = await listSessionSummaries(ctx, user);
+
+    return { viewer, sessions };
+  },
+});
+
+export const listLearningSessions = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await requireIdentity(ctx);
+    const user = await fetchUserBySubject(ctx, identity.subject);
+    if (!user) {
+      throw new ConvexError('USER_PROFILE_MISSING');
+    }
+
+    return listSessionSummaries(ctx, user);
+  },
+});
+
+export const getSessionOverview = query({
+  args: {
+    sessionId: v.id('learningSessions'),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireIdentity(ctx);
+    const user = await fetchUserBySubject(ctx, identity.subject);
+    if (!user) {
+      throw new ConvexError('USER_PROFILE_MISSING');
+    }
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== user._id) {
+      throw new ConvexError('SESSION_NOT_FOUND');
+    }
+
+    const phaseDocs = await ctx.db
+      .query('sessionPhases')
+      .withIndex('by_session_index', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+    phaseDocs.sort((a, b) => a.index - b.index);
+
+    const termDocs = await ctx.db
+      .query('sessionTerms')
+      .withIndex('by_session', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+
+    const termsByPhase = new Map<number, SessionTerm[]>();
+    for (const term of termDocs.map(mapTermDoc)) {
+      const bucket = termsByPhase.get(term.phaseIndex);
+      if (bucket) {
+        bucket.push(term);
+      } else {
+        termsByPhase.set(term.phaseIndex, [term]);
+      }
+    }
+
+    for (const list of termsByPhase.values()) {
+      list.sort((a, b) => a.term.localeCompare(b.term));
+    }
+
+    return {
+      session: mapSessionDocToSummary(session),
+      phases: phaseDocs.map((phaseDoc) => ({
+        ...mapPhaseDoc(phaseDoc),
+        terms: termsByPhase.get(phaseDoc.index) ?? [],
+      })),
+    };
+  },
+});
+
+export const createLearningSession = mutation({
+  args: {
+    plan: v.object({
+      topic: v.string(),
+      tone: v.optional(v.string()),
+      summary: v.optional(v.string()),
+      phases: v.array(
+        v.object({
+          name: v.string(),
+          objective: v.string(),
+          keyTerms: v.array(v.string()),
+        })
+      ),
+    }),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireIdentity(ctx);
+    const user = await ensureUser(ctx, identity);
+
+    const plan: GeneratedPlanPayload = args.plan;
+
+    const topic = cleanString(plan.topic);
+    if (!topic) {
+      throw new ConvexError('PLAN_TOPIC_REQUIRED');
+    }
+    if (plan.phases.length === 0) {
+      throw new ConvexError('PLAN_PHASES_REQUIRED');
+    }
+
+    const preparedPhases = plan.phases.map((phase: PlanPhaseInput, index) => {
+      const name = cleanString(phase.name);
+      const objective = cleanString(phase.objective);
+      const keyTerms = phase.keyTerms
+        .map((term) => cleanString(term))
+        .filter((term): term is string => term !== undefined);
+
+      if (!name || !objective) {
+        throw new ConvexError('PLAN_PHASE_INVALID');
+      }
+      if (keyTerms.length === 0) {
+        throw new ConvexError('PLAN_PHASE_TERMS_REQUIRED');
+      }
+
+      return {
+        index,
+        name,
+        objective,
+        keyTerms,
+      };
+    });
+
+    const tone = cleanString(plan.tone);
+    const summary = cleanString(plan.summary);
+    const totalTerms = preparedPhases.reduce((acc, phase) => acc + phase.keyTerms.length, 0);
+    const now = Date.now();
+
+    const sessionId = await ctx.db.insert('learningSessions', {
+      userId: user._id,
+      topic,
+      tone: tone ?? undefined,
+      planTone: tone ?? undefined,
+      planSummary: summary ?? undefined,
+      currentPhaseIndex: 0,
+      totalPhases: preparedPhases.length,
+      completedPhases: 0,
+      totalTerms,
+      completedTerms: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    for (const phase of preparedPhases) {
+      await ctx.db.insert('sessionPhases', {
+        sessionId,
+        index: phase.index,
+        name: phase.name,
+        objective: phase.objective,
+      });
+
+      for (const term of phase.keyTerms) {
+        await ctx.db.insert('sessionTerms', {
+          sessionId,
+          phaseIndex: phase.index,
+          term,
+          exposureCount: 0,
+        });
+      }
+    }
+
+    const session = await ctx.db.get(sessionId);
+    if (!session) {
+      throw new ConvexError('SESSION_CREATION_FAILED');
+    }
+
+    return {
+      sessionId,
+      session: mapSessionDocToSummary(session),
+    };
   },
 });
