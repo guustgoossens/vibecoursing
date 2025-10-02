@@ -4,8 +4,8 @@ import { Authenticated, Unauthenticated, useMutation, useQuery } from 'convex/re
 import { api } from '@/convex/_generated/api';
 import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Doc, Id } from '@/convex/_generated/dataModel';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { Id } from '@/convex/_generated/dataModel';
 
 type AuthLikeUser = {
   email?: string | null;
@@ -28,21 +28,17 @@ type ViewerSummary = {
   avatarUrl: string | null;
 } | null;
 
-type ChannelSummary = {
-  id: Id<'channels'>;
-  name: string;
-  description: string | null;
-  isPrivate: boolean;
-};
-
-type PendingMessage = {
-  clientId: string;
-  channelId: Id<'channels'>;
-  body: string;
+type SessionSummary = {
+  id: Id<'learningSessions'>;
+  topic: string;
   createdAt: number;
+  updatedAt: number;
+  currentPhaseIndex: number | null;
+  completedPhases: number;
+  totalPhases: number;
+  completedTerms: number;
+  totalTerms: number;
 };
-
-const MAX_MESSAGE_LENGTH = 2000;
 
 function deriveProfileFields(user: AuthLikeUser | null | undefined): DerivedProfile {
   if (!user) {
@@ -84,7 +80,6 @@ export default function Home() {
 function Content() {
   const { user, signOut } = useAuth();
   const syncUserProfile = useMutation(api.chat.syncUserProfile);
-  const sendMessage = useMutation(api.chat.sendMessage);
   const derivedProfile = useMemo(() => deriveProfileFields(user), [user]);
 
   useEffect(() => {
@@ -98,96 +93,54 @@ function Content() {
     });
   }, [user, derivedProfile.email, derivedProfile.name, derivedProfile.avatarUrl, syncUserProfile]);
 
-  const bootstrap = useQuery(api.chat.bootstrap);
-  const channels = useQuery(api.chat.listChannels);
-  const [activeChannelId, setActiveChannelId] = useState<Id<'channels'> | null>(null);
-  const [pendingMessages, setPendingMessages] = useState<PendingMessage[]>([]);
+  const bootstrap = useQuery(api.chat.sessionBootstrap);
+  const sessions = useQuery(api.chat.listLearningSessions);
+
+  const [activeSessionId, setActiveSessionId] = useState<Id<'learningSessions'> | null>(null);
 
   useEffect(() => {
-    if (channels === undefined) {
+    if (sessions === undefined) {
       return;
     }
-    if (channels.length === 0) {
-      if (activeChannelId !== null) {
-        setActiveChannelId(null);
+    if (sessions.length === 0) {
+      if (activeSessionId !== null) {
+        setActiveSessionId(null);
       }
       return;
     }
-    if (!activeChannelId || !channels.some((channel) => channel.id === activeChannelId)) {
-      setActiveChannelId(channels[0].id);
+    if (!activeSessionId || !sessions.some((session) => session.id === activeSessionId)) {
+      setActiveSessionId(sessions[0].id);
     }
-  }, [channels, activeChannelId]);
+  }, [sessions, activeSessionId]);
 
-  const handleSelectChannel = useCallback((channelId: Id<'channels'>) => {
-    setActiveChannelId((current) => (current === channelId ? current : channelId));
+  const viewer = bootstrap?.viewer ?? null;
+  const activeSession = activeSessionId && sessions ? sessions.find((session) => session.id === activeSessionId) ?? null : null;
+
+  const handleSelectSession = useCallback((sessionId: Id<'learningSessions'>) => {
+    setActiveSessionId((current) => (current === sessionId ? current : sessionId));
   }, []);
 
-  const handleSendMessage = useCallback(
-    async (channelId: Id<'channels'>, body: string) => {
-      const trimmed = body.trim();
-      if (trimmed.length === 0) {
-        return;
-      }
-      const clientId = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2);
-      const createdAt = Date.now();
-      const optimisticMessage: PendingMessage = {
-        clientId,
-        channelId,
-        body: trimmed,
-        createdAt,
-      };
-      setPendingMessages((current) => [...current, optimisticMessage]);
-      try {
-        await sendMessage({ channelId, body: trimmed });
-        setPendingMessages((current) => current.filter((message) => message.clientId !== clientId));
-      } catch (error) {
-        setPendingMessages((current) => current.filter((message) => message.clientId !== clientId));
-        throw error;
-      }
-    },
-    [sendMessage]
-  );
-
-  const messagesResult = useQuery(
-    api.chat.listMessages,
-    activeChannelId ? { channelId: activeChannelId } : 'skip'
-  );
-
-  if (channels === undefined) {
+  if (bootstrap === undefined || sessions === undefined) {
     return (
       <ChatLayout
         header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
-        sidebar={<ChannelSidebarSkeleton />}
-        main={<ChatPaneSkeleton />}
+        sidebar={<SessionSidebarSkeleton />}
+        main={<SessionMainSkeleton />}
       />
     );
   }
-
-  const viewer = bootstrap?.viewer ?? null;
-  const activeChannel = activeChannelId
-    ? channels.find((channel) => channel.id === activeChannelId) ?? null
-    : null;
 
   return (
     <ChatLayout
       header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
       sidebar={
-        <ChannelSidebar
-          channels={channels}
-          activeChannelId={activeChannel?.id ?? null}
-          onSelectChannel={handleSelectChannel}
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={handleSelectSession}
         />
       }
-      main={
-        <ChatPane
-          viewer={viewer}
-          channel={activeChannel}
-          messages={messagesResult ?? []}
-          pendingMessages={pendingMessages}
-          onSendMessage={handleSendMessage}
-          isLoadingMessages={messagesResult === undefined && activeChannel !== null}
-        />
-      }
+      main={<SessionLanding viewer={viewer} session={activeSession} hasSessions={sessions.length > 0} />}
     />
   );
 }
@@ -201,7 +154,7 @@ function WorkspaceTopBar({ user, onSignOut }: { user: AuthLikeUser | null | unde
         </div>
         <div className="flex flex-col">
           <span className="text-sm font-semibold leading-none">Vibecoursing</span>
-          <span className="text-xs text-muted-foreground">Chat workspace MVP</span>
+          <span className="text-xs text-muted-foreground">Learning companion MVP</span>
         </div>
       </div>
       {user && <UserMenu user={user} onSignOut={onSignOut} />}
@@ -209,30 +162,31 @@ function WorkspaceTopBar({ user, onSignOut }: { user: AuthLikeUser | null | unde
   );
 }
 
-function ChannelSidebar({
-  channels,
-  activeChannelId,
-  onSelectChannel,
+function SessionSidebar({
+  sessions,
+  activeSessionId,
+  onSelectSession,
 }: {
-  channels: ChannelSummary[];
-  activeChannelId: Id<'channels'> | null;
-  onSelectChannel: (channelId: Id<'channels'>) => void;
+  sessions: SessionSummary[];
+  activeSessionId: Id<'learningSessions'> | null;
+  onSelectSession: (sessionId: Id<'learningSessions'>) => void;
 }) {
   return (
     <>
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Channels</h2>
-        <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">{channels.length}</span>
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sessions</h2>
+        <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">{sessions.length}</span>
       </div>
       <nav className="flex-1 overflow-y-auto">
-        {channels.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No channels yet—run the setup mutation to seed a default room.</p>
+        {sessions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No sessions yet—use the main panel to create your first topic.</p>
         ) : (
           <ul className="flex flex-col gap-2 text-sm">
-            {channels.map((channel) => {
-              const isActive = channel.id === activeChannelId;
+            {sessions.map((session) => {
+              const isActive = session.id === activeSessionId;
+              const progress = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
               return (
-                <li key={channel.id}>
+                <li key={session.id}>
                   <button
                     type="button"
                     className={`w-full rounded-md border px-3 py-2 text-left transition ${
@@ -241,13 +195,15 @@ function ChannelSidebar({
                         : 'border-transparent bg-background/40 text-muted-foreground hover:border-slate-300 hover:bg-background hover:text-foreground dark:hover:border-slate-700'
                     }`}
                     aria-current={isActive ? 'page' : undefined}
-                    onClick={() => onSelectChannel(channel.id)}
+                    onClick={() => onSelectSession(session.id)}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium">#{channel.name}</span>
-                      {channel.isPrivate && <span className="text-[10px] uppercase text-muted-foreground">Private</span>}
+                      <span className="font-medium">{session.topic}</span>
+                      <span className="text-[10px] uppercase text-muted-foreground">{progress}%</span>
                     </div>
-                    {channel.description && <p className="text-xs text-muted-foreground">{channel.description}</p>}
+                    <p className="text-xs text-muted-foreground">
+                      Updated {new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    </p>
                   </button>
                 </li>
               );
@@ -256,285 +212,126 @@ function ChannelSidebar({
         )}
       </nav>
       <p className="text-xs text-muted-foreground">
-        Select a channel to jump between rooms. New channels appear here instantly when Convex data updates.
+        Learning sessions capture your topic plan, transcripts, and progress across key terms.
       </p>
     </>
   );
 }
 
-function ChannelSidebarSkeleton() {
+function SessionSidebarSkeleton() {
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="h-4 w-24 rounded bg-slate-300/50 dark:bg-slate-700/60" />
+      <div className="h-4 w-28 rounded bg-slate-300/50 dark:bg-slate-700/60" />
       <div className="flex flex-col gap-3">
-        <div className="h-10 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-10 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-10 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
+        <div className="h-12 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
+        <div className="h-12 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
+        <div className="h-12 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
       </div>
+      <div className="h-10 w-3/4 rounded bg-slate-300/30 dark:bg-slate-700/40" />
     </div>
   );
 }
 
-function ChatPane({
+function SessionLanding({
   viewer,
-  channel,
-  messages,
-  pendingMessages,
-  onSendMessage,
-  isLoadingMessages,
+  session,
+  hasSessions,
 }: {
   viewer: ViewerSummary;
-  channel: ChannelSummary | null;
-  messages: Doc<'messages'>[];
-  pendingMessages: PendingMessage[];
-  onSendMessage: (channelId: Id<'channels'>, body: string) => Promise<void>;
-  isLoadingMessages: boolean;
+  session: SessionSummary | null;
+  hasSessions: boolean;
 }) {
-  const messageContainerRef = useRef<HTMLDivElement>(null);
-  const activeChannelId = channel?.id ?? null;
-  const optimisticMessages = useMemo(() => {
-    if (!activeChannelId) {
-      return [] as PendingMessage[];
-    }
-    return pendingMessages.filter((message) => message.channelId === activeChannelId);
-  }, [pendingMessages, activeChannelId]);
-  const hasMessages = channel ? messages.length > 0 || optimisticMessages.length > 0 : false;
-
-  useEffect(() => {
-    if (!messageContainerRef.current) {
-      return;
-    }
-    messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
-  }, [messages, optimisticMessages]);
-
-  if (!channel) {
-    return <EmptyChannelState viewer={viewer} />;
+  if (!hasSessions) {
+    return <EmptySessionState viewer={viewer} />;
   }
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-slate-200 px-6 py-4 dark:border-slate-800">
-        <h1 className="text-lg font-semibold">#{channel.name}</h1>
-        {channel.description && <p className="text-sm text-muted-foreground">{channel.description}</p>}
-      </div>
-      <div ref={messageContainerRef} className="flex-1 overflow-y-auto px-6 py-4">
-        {isLoadingMessages ? (
-          <LoadingMessages />
-        ) : hasMessages ? (
-          <MessageList messages={messages} pendingMessages={optimisticMessages} />
-        ) : (
-          <MessagesEmptyState channelName={channel.name} />
-        )}
-      </div>
-      <div className="border-t border-slate-200 px-6 py-4 dark:border-slate-800">
-        <MessageComposer channelId={channel.id} onSend={onSendMessage} />
-      </div>
-    </div>
-  );
-}
-
-function ChatPaneSkeleton() {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="h-16 border-b border-slate-200 bg-muted/30 dark:border-slate-800" />
-      <div className="flex-1 space-y-3 overflow-y-auto px-6 py-4">
-        <div className="h-16 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-16 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-16 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-      </div>
-      <div className="h-20 border-t border-slate-200 bg-muted/30 dark:border-slate-800" />
-    </div>
-  );
-}
-
-function MessageList({
-  messages,
-  pendingMessages,
-}: {
-  messages: Doc<'messages'>[];
-  pendingMessages: PendingMessage[];
-}) {
-  return (
-    <ul className="flex flex-col gap-3 text-sm">
-      {messages.map((message) => (
-        <li
-          key={message._id}
-          className="rounded-md border border-slate-200 bg-background px-4 py-3 shadow-sm dark:border-slate-700"
-        >
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{message.authorId}</span>
-            <time dateTime={new Date(message.sentAt).toISOString()}>
-              {new Date(message.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </time>
-          </div>
-          <p className="mt-1 text-sm text-foreground">{message.body}</p>
-        </li>
-      ))}
-      {pendingMessages.map((message) => (
-        <li
-          key={message.clientId}
-          className="rounded-md border border-dashed border-slate-300 bg-muted/40 px-4 py-3 text-sm text-muted-foreground shadow-sm dark:border-slate-700/70"
-        >
-          <div className="flex items-center gap-2 text-xs">
-            <span className="font-medium text-foreground">You</span>
-            <span className="text-muted-foreground">Sending…</span>
-          </div>
-          <p className="mt-1 text-sm text-foreground">{message.body}</p>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function LoadingMessages() {
-  return (
-    <div className="space-y-3">
-      <div className="h-14 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-      <div className="h-14 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-      <div className="h-14 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-    </div>
-  );
-}
-
-function MessageComposer({
-  channelId,
-  onSend,
-}: {
-  channelId: Id<'channels'>;
-  onSend: (channelId: Id<'channels'>, body: string) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isOnline, setIsOnline] = useState<boolean>(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  const trimmed = draft.trim();
-  const canSubmit = isOnline && trimmed.length > 0 && !isSubmitting;
-  const remainingCharacters = MAX_MESSAGE_LENGTH - draft.length;
-
-  const performSubmit = useCallback(async () => {
-    if (!canSubmit) {
-      return;
-    }
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      await onSend(channelId, trimmed);
-      setDraft('');
-    } catch (sendError) {
-      console.error('Failed to send message', sendError);
-      const errorMessage = normaliseSendError(sendError);
-      setError(errorMessage);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [canSubmit, channelId, onSend, trimmed]);
-
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    await performSubmit();
-  };
-
-  const handleKeyDown = async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      await performSubmit();
-    }
-  };
-
-  const statusLabel = !isOnline
-    ? 'Offline — reconnect to send messages.'
-    : 'Press ⌘+Enter (or Ctrl+Enter) to send';
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="flex flex-col gap-2 rounded-md border border-slate-200 bg-background p-3 shadow-sm dark:border-slate-700"
-    >
-      <textarea
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={handleKeyDown}
-        rows={2}
-        placeholder="Write a message"
-        maxLength={MAX_MESSAGE_LENGTH}
-        className="w-full resize-none rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
-      />
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">{statusLabel}</span>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-muted-foreground">{remainingCharacters} left</span>
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
-              isSubmitting ? 'cursor-progress' : ''
-            }`}
-          >
-            {isSubmitting ? 'Sending…' : 'Send'}
-          </button>
-        </div>
-      </div>
-      {error && (
-        <p className="text-xs text-red-500" role="alert" aria-live="assertive">
-          {error}
-        </p>
-      )}
-      {!isOnline && (
-        <p className="text-xs text-yellow-600" role="status" aria-live="polite">
-          You are offline. Messages will resume once you reconnect.
-        </p>
-      )}
-    </form>
-  );
-}
-
-function normaliseSendError(error: unknown): string {
-  if (error instanceof Error) {
-    const message = error.message ?? '';
-    if (message.includes('EMPTY_MESSAGE')) {
-      return 'Message cannot be empty.';
-    }
-    if (message.includes('MESSAGE_TOO_LONG')) {
-      return `Message is too long. Keep it under ${MAX_MESSAGE_LENGTH} characters.`;
-    }
-    if (message.includes('NOT_AUTHORIZED')) {
-      return 'You do not have access to send messages in this channel.';
-    }
+  if (!session) {
+    return <MissingSessionSelectionState />;
   }
-  return 'Something went wrong sending your message. Try again.';
+
+  return <SessionOverviewCard session={session} />;
 }
 
-function EmptyChannelState({ viewer }: { viewer: ViewerSummary }) {
+function EmptySessionState({ viewer }: { viewer: ViewerSummary }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
       <h2 className="text-lg font-semibold">Welcome{viewer?.name ? `, ${viewer.name}` : ''}!</h2>
       <p className="max-w-sm text-sm text-muted-foreground">
-        Create or seed a channel to unlock the conversation. Once one exists, messages sync here instantly for everyone in the workspace.
+        Use this workspace to design guided learning sessions. Start by drafting a topic plan and we will track your progress phase by phase.
       </p>
     </div>
   );
 }
 
-function MessagesEmptyState({ channelName }: { channelName: string }) {
+function MissingSessionSelectionState() {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-muted-foreground">
-      <h3 className="text-sm font-medium">No messages in #{channelName} yet</h3>
-      <p className="max-w-sm text-sm">Drop a message below to kick off the chat.</p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-muted-foreground">
+      <h3 className="text-sm font-medium">Select a session to view its progress</h3>
+      <p className="max-w-sm text-sm">Pick any session from the sidebar to continue learning.</p>
+    </div>
+  );
+}
+
+function SessionOverviewCard({ session }: { session: SessionSummary }) {
+  const phaseProgress = session.totalPhases > 0 ? Math.round((session.completedPhases / session.totalPhases) * 100) : 0;
+  const termProgress = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
+  const currentPhaseLabel =
+    session.currentPhaseIndex !== null ? `Currently in phase ${session.currentPhaseIndex + 1} of ${session.totalPhases}` : 'Phase status pending';
+
+  return (
+    <div className="flex flex-1 flex-col gap-4 px-6 py-8">
+      <div>
+        <h1 className="text-2xl font-semibold text-foreground">{session.topic}</h1>
+        <p className="text-sm text-muted-foreground">{currentPhaseLabel}</p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <SessionMetric label="Phases complete" value={`${session.completedPhases}/${session.totalPhases}`} hint={`${phaseProgress}%`} />
+        <SessionMetric label="Key terms covered" value={`${session.completedTerms}/${session.totalTerms}`} hint={`${termProgress}%`} />
+        <SessionMetric
+          label="Created"
+          value={new Date(session.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+        />
+        <SessionMetric
+          label="Last updated"
+          value={new Date(session.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+        />
+      </div>
+      <div className="rounded-md border border-dashed border-slate-300 bg-muted/30 p-4 text-sm text-muted-foreground dark:border-slate-700/70">
+        Session transcripts and AI prompts will appear here once the intake flow is wired up.
+      </div>
+    </div>
+  );
+}
+
+function SessionMetric({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+      <div className="mt-2 text-xl font-semibold text-foreground">{value}</div>
+      {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
+    </div>
+  );
+}
+
+function SessionMainSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 px-6 py-8">
+      <div className="h-9 w-3/4 rounded bg-slate-300/30 dark:bg-slate-700/40" />
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
+        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
+        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
+        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
+      </div>
+      <div className="flex-1 rounded bg-slate-300/30 dark:bg-slate-700/40" />
     </div>
   );
 }
@@ -542,8 +339,8 @@ function MessagesEmptyState({ channelName }: { channelName: string }) {
 function UnauthenticatedState() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background px-6 text-center">
-      <h1 className="text-3xl font-bold">Team chat workspace</h1>
-      <p className="max-w-sm text-sm text-muted-foreground">Log in with WorkOS to explore the shared workspace.</p>
+      <h1 className="text-3xl font-bold">Learning sessions workspace</h1>
+      <p className="max-w-sm text-sm text-muted-foreground">Log in with WorkOS to explore the guided learning companion.</p>
       <div className="flex flex-col gap-3">
         <a href="/sign-in">
           <button className="w-56 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background">Sign in</button>
