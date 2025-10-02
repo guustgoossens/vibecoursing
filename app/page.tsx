@@ -4,7 +4,7 @@ import { Authenticated, Unauthenticated, useAction, useMutation, useQuery } from
 import { api } from '@/convex/_generated/api';
 import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Id } from '@/convex/_generated/dataModel';
 
 type AuthLikeUser = {
@@ -53,6 +53,42 @@ type GeneratedPlan = {
   phases: GeneratedPlanPhase[];
 };
 
+type SessionTranscriptMessage = {
+  id: Id<'sessionMessages'>;
+  role: 'user' | 'assistant';
+  body: string;
+  createdAt: number;
+  termsCovered: string[];
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+};
+
+type SessionFollowUpSuggestion = {
+  id: Id<'sessionFollowUps'>;
+  prompt: string;
+  rationale: string | null;
+  createdAt: number;
+  usedAt: number | null;
+};
+
+type SessionPhaseProgress = {
+  index: number;
+  name: string;
+  objective: string;
+  totalTerms: number;
+  completedTerms: number;
+  remainingTerms: string[];
+  isComplete: boolean;
+};
+
+type SessionTranscriptData = {
+  session: SessionSummary;
+  messages: SessionTranscriptMessage[];
+  followUps: SessionFollowUpSuggestion[];
+  phaseProgress: SessionPhaseProgress[];
+};
+
 class PlanValidationError extends Error {
   code: string;
 
@@ -63,6 +99,8 @@ class PlanValidationError extends Error {
     Object.setPrototypeOf(this, PlanValidationError.prototype);
   }
 }
+
+const MAX_PROMPT_LENGTH = 2000;
 
 function deriveProfileFields(user: AuthLikeUser | null | undefined): DerivedProfile {
   if (!user) {
@@ -137,6 +175,11 @@ function Content() {
     }
   }, [sessions, activeSessionId]);
 
+  const transcript = useQuery(
+    api.chat.getSessionTranscript,
+    activeSessionId ? { sessionId: activeSessionId } : 'skip'
+  );
+
   const viewer = bootstrap?.viewer ?? null;
   const activeSession = activeSessionId && sessions ? sessions.find((session) => session.id === activeSessionId) ?? null : null;
 
@@ -174,6 +217,7 @@ function Content() {
           session={activeSession}
           hasSessions={sessions.length > 0}
           onSessionCreated={handleSessionCreated}
+          transcript={transcript}
         />
       }
     />
@@ -272,25 +316,38 @@ function SessionLanding({
   session,
   hasSessions,
   onSessionCreated,
+  transcript,
 }: {
   viewer: ViewerSummary;
   session: SessionSummary | null;
   hasSessions: boolean;
   onSessionCreated: (sessionId: Id<'learningSessions'>) => void;
+  transcript: SessionTranscriptData | undefined;
 }) {
-  let primaryPanel: JSX.Element;
-
   if (!hasSessions) {
-    primaryPanel = <EmptySessionState viewer={viewer} />;
-  } else if (!session) {
-    primaryPanel = <MissingSessionSelectionState />;
-  } else {
-    primaryPanel = <SessionOverviewCard session={session} />;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
+        <EmptySessionState viewer={viewer} />
+        <SessionIntake onSessionCreated={onSessionCreated} />
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
+        <MissingSessionSelectionState />
+        <SessionIntake onSessionCreated={onSessionCreated} />
+      </div>
+    );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
-      {primaryPanel}
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+        <SessionTranscriptPanel sessionId={session.id} transcript={transcript} />
+        <SessionOverviewCard session={session} phaseProgress={transcript?.phaseProgress} />
+      </div>
       <SessionIntake onSessionCreated={onSessionCreated} />
     </div>
   );
@@ -316,21 +373,31 @@ function MissingSessionSelectionState() {
   );
 }
 
-function SessionOverviewCard({ session }: { session: SessionSummary }) {
-  const phaseProgress = session.totalPhases > 0 ? Math.round((session.completedPhases / session.totalPhases) * 100) : 0;
-  const termProgress = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
-  const currentPhaseLabel =
-    session.currentPhaseIndex !== null ? `Currently in phase ${session.currentPhaseIndex + 1} of ${session.totalPhases}` : 'Phase status pending';
+function SessionOverviewCard({
+  session,
+  phaseProgress,
+}: {
+  session: SessionSummary;
+  phaseProgress?: SessionPhaseProgress[];
+}) {
+  const phaseProgressRatio = session.totalPhases > 0 ? Math.round((session.completedPhases / session.totalPhases) * 100) : 0;
+  const termProgressRatio = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
+  const nextPhase = phaseProgress?.find((phase) => !phase.isComplete) ?? null;
+  const allPhasesComplete = phaseProgress ? phaseProgress.every((phase) => phase.isComplete) : false;
 
   return (
-    <div className="flex flex-1 flex-col gap-4 rounded-md border border-slate-200 bg-background px-6 py-6 shadow-sm dark:border-slate-700">
+    <div className="flex min-h-[420px] flex-col gap-4 rounded-md border border-slate-200 bg-background px-6 py-6 shadow-sm dark:border-slate-700">
       <div>
         <h1 className="text-2xl font-semibold text-foreground">{session.topic}</h1>
-        <p className="text-sm text-muted-foreground">{currentPhaseLabel}</p>
+        <p className="text-sm text-muted-foreground">
+          {session.currentPhaseIndex !== null
+            ? `Currently in phase ${session.currentPhaseIndex + 1} of ${session.totalPhases}`
+            : 'Phase status pending'}
+        </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
-        <SessionMetric label="Phases complete" value={`${session.completedPhases}/${session.totalPhases}`} hint={`${phaseProgress}%`} />
-        <SessionMetric label="Key terms covered" value={`${session.completedTerms}/${session.totalTerms}`} hint={`${termProgress}%`} />
+        <SessionMetric label="Phases complete" value={`${session.completedPhases}/${session.totalPhases}`} hint={`${phaseProgressRatio}%`} />
+        <SessionMetric label="Key terms covered" value={`${session.completedTerms}/${session.totalTerms}`} hint={`${termProgressRatio}%`} />
         <SessionMetric
           label="Created"
           value={new Date(session.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
@@ -340,9 +407,33 @@ function SessionOverviewCard({ session }: { session: SessionSummary }) {
           value={new Date(session.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
         />
       </div>
-      <div className="rounded-md border border-dashed border-slate-300 bg-muted/30 p-4 text-sm text-muted-foreground dark:border-slate-700/70">
-        Session transcripts and AI prompts will appear here once the conversation flow is connected.
-      </div>
+      {phaseProgress && (
+        <div className="rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Next focus</span>
+          {allPhasesComplete ? (
+            <p className="mt-2 text-sm text-foreground">All phases are complete. Keep practicing or spin up a new topic!</p>
+          ) : nextPhase ? (
+            <>
+              <p className="mt-2 text-sm font-medium text-foreground">{nextPhase.name}</p>
+              <p className="text-xs text-muted-foreground">{nextPhase.objective}</p>
+              {nextPhase.remainingTerms.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  {nextPhase.remainingTerms.map((term) => (
+                    <span
+                      key={term}
+                      className="rounded-full border border-slate-200 bg-muted/60 px-2 py-1 text-muted-foreground dark:border-slate-700"
+                    >
+                      {term}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground">Progress data is updating…</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -361,6 +452,273 @@ function SessionMetric({
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
       <div className="mt-2 text-xl font-semibold text-foreground">{value}</div>
       {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
+    </div>
+  );
+}
+
+function SessionTranscriptPanel({
+  sessionId,
+  transcript,
+}: {
+  sessionId: Id<'learningSessions'>;
+  transcript: SessionTranscriptData | undefined;
+}) {
+  const runSessionTurn = useAction(api.mistral.runSessionTurn);
+  const [draft, setDraft] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedFollowUp, setSelectedFollowUp] = useState<Id<'sessionFollowUps'> | null>(null);
+  const messageContainerRef = useRef<HTMLDivElement>(null);
+
+  const isLoading = transcript === undefined;
+  const messages = transcript?.messages ?? [];
+  const followUps = (transcript?.followUps ?? []).filter((followUp) => followUp.usedAt === null);
+
+  useEffect(() => {
+    if (!messageContainerRef.current) {
+      return;
+    }
+    messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+  }, [messages.length]);
+
+  useEffect(() => {
+    if (!selectedFollowUp) {
+      return;
+    }
+    if (!followUps.some((item) => item.id === selectedFollowUp)) {
+      setSelectedFollowUp(null);
+    }
+  }, [followUps, selectedFollowUp]);
+
+  const sendTurn = useCallback(async () => {
+    const trimmed = draft.trim();
+    if (trimmed.length === 0) {
+      setError('Enter a message to continue the session.');
+      return;
+    }
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await runSessionTurn({
+        sessionId,
+        prompt: trimmed,
+        followUpId: selectedFollowUp ?? undefined,
+      });
+      setDraft('');
+      setSelectedFollowUp(null);
+    } catch (err) {
+      console.error('Failed to run session turn', err);
+      setError(normaliseSessionTurnError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [draft, runSessionTurn, selectedFollowUp, sessionId]);
+
+  const handleDraftChange = useCallback((value: string) => {
+    setDraft(value);
+    if (selectedFollowUp) {
+      setSelectedFollowUp(null);
+    }
+  }, [selectedFollowUp]);
+
+  const handleSelectFollowUp = useCallback(
+    (followUp: SessionFollowUpSuggestion) => {
+      setDraft(followUp.prompt);
+      setSelectedFollowUp(followUp.id);
+      setError(null);
+    },
+    []
+  );
+
+  return (
+    <div className="flex min-h-[420px] flex-col overflow-hidden rounded-md border border-slate-200 bg-background shadow-sm dark:border-slate-700">
+      <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+        <h3 className="text-base font-semibold text-foreground">Session transcript</h3>
+        {isLoading && <span className="text-xs text-muted-foreground">Loading…</span>}
+      </div>
+      <div ref={messageContainerRef} className="flex-1 overflow-y-auto px-6 py-4">
+        {isLoading ? (
+          <TranscriptSkeleton />
+        ) : messages.length === 0 ? (
+          <EmptyTranscriptState />
+        ) : (
+          <TranscriptMessageList messages={messages} />
+        )}
+      </div>
+      <div className="space-y-3 border-t border-slate-200 px-6 py-4 dark:border-slate-700">
+        <FollowUpSuggestions
+          followUps={followUps}
+          onSelect={handleSelectFollowUp}
+          selectedId={selectedFollowUp}
+          disabled={isSubmitting}
+        />
+        <SessionTurnComposer
+          draft={draft}
+          onDraftChange={handleDraftChange}
+          onSubmit={sendTurn}
+          isSubmitting={isSubmitting}
+          error={error}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TranscriptMessageList({ messages }: { messages: SessionTranscriptMessage[] }) {
+  return (
+    <ul className="flex flex-col gap-4">
+      {messages.map((message) => (
+        <li
+          key={message.id}
+          className={`rounded-md border px-4 py-3 text-sm shadow-sm ${
+            message.role === 'assistant'
+              ? 'border-slate-200 bg-background text-foreground dark:border-slate-700'
+              : 'border-slate-300 bg-muted/40 text-foreground dark:border-slate-600'
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{message.role === 'assistant' ? 'Vibecoursing' : 'You'}</span>
+            <span>{formatTimestamp(message.createdAt)}</span>
+          </div>
+          <p className="mt-2 whitespace-pre-line text-sm text-foreground">{message.body}</p>
+          {message.termsCovered.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              {message.termsCovered.map((term) => (
+                <span key={`${message.id}-${term}`} className="rounded-full bg-emerald-500/10 px-2 py-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+                  {term}
+                </span>
+              ))}
+            </div>
+          )}
+          {message.totalTokens !== null && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Tokens: prompt {message.promptTokens ?? 0}, completion {message.completionTokens ?? 0}, total {message.totalTokens}
+            </div>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function FollowUpSuggestions({
+  followUps,
+  onSelect,
+  selectedId,
+  disabled,
+}: {
+  followUps: SessionFollowUpSuggestion[];
+  onSelect: (followUp: SessionFollowUpSuggestion) => void;
+  selectedId: Id<'sessionFollowUps'> | null;
+  disabled: boolean;
+}) {
+  if (followUps.length === 0) {
+    return <p className="text-xs text-muted-foreground">Follow-up prompts will appear here once the assistant suggests them.</p>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {followUps.map((followUp) => {
+        const isSelected = followUp.id === selectedId;
+        return (
+          <button
+            key={followUp.id}
+            type="button"
+            className={`rounded-full border px-3 py-1 text-xs transition ${
+              isSelected
+                ? 'border-foreground bg-foreground text-background shadow-sm'
+                : 'border-slate-200 bg-background text-muted-foreground hover:border-foreground hover:text-foreground dark:border-slate-700'
+            }`}
+            onClick={() => onSelect(followUp)}
+            disabled={disabled}
+            title={followUp.rationale ?? undefined}
+          >
+            {followUp.prompt}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SessionTurnComposer({
+  draft,
+  onDraftChange,
+  onSubmit,
+  isSubmitting,
+  error,
+}: {
+  draft: string;
+  onDraftChange: (value: string) => void;
+  onSubmit: () => Promise<void>;
+  isSubmitting: boolean;
+  error: string | null;
+}) {
+  const remaining = MAX_PROMPT_LENGTH - draft.length;
+  const canSubmit = draft.trim().length > 0 && !isSubmitting;
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await onSubmit();
+  };
+
+  const handleKeyDown = async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      await onSubmit();
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2">
+      <textarea
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        onKeyDown={handleKeyDown}
+        rows={3}
+        maxLength={MAX_PROMPT_LENGTH}
+        placeholder="Ask a question, reflect on a term, or request an example."
+        className="w-full resize-y rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+      />
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>{remaining} characters left</span>
+        <span>Press ⌘+Enter (or Ctrl+Enter) to send</span>
+      </div>
+      <div className="flex items-center justify-between">
+        {error ? (
+          <span className="text-xs text-red-500">{error}</span>
+        ) : (
+          <span className="text-xs text-muted-foreground">Turns sync automatically to your learning plan.</span>
+        )}
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
+            isSubmitting ? 'cursor-progress' : ''
+          }`}
+        >
+          {isSubmitting ? 'Sending…' : 'Send turn'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function TranscriptSkeleton() {
+  return (
+    <div className="space-y-3">
+      <div className="h-20 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
+      <div className="h-20 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
+      <div className="h-20 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
+    </div>
+  );
+}
+
+function EmptyTranscriptState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
+      <h4 className="text-sm font-medium">No messages yet</h4>
+      <p className="max-w-sm text-xs">Kick off the session with a question or reflection. We will track progress against your plan.</p>
     </div>
   );
 }
@@ -633,4 +991,27 @@ function normaliseIntakeError(error: unknown): string {
     }
   }
   return 'Something went wrong while creating the session. Please try again.';
+}
+
+function normaliseSessionTurnError(error: unknown): string {
+  if (error instanceof Error) {
+    const message = error.message ?? '';
+    if (message.includes('EMPTY_MESSAGE')) {
+      return 'Message cannot be empty.';
+    }
+    if (message.includes('MISTRAL_REQUEST_FAILED')) {
+      return 'The assistant could not respond. Try again in a moment.';
+    }
+    if (message.includes('MISTRAL_API_KEY_NOT_CONFIGURED')) {
+      return 'Mistral API key is not configured on the server.';
+    }
+    if (message.includes('SESSION_NOT_FOUND')) {
+      return 'Could not find that session. Refresh and try again.';
+    }
+  }
+  return 'Failed to send the turn. Please try again.';
+}
+
+function formatTimestamp(timestamp: number) {
+  return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

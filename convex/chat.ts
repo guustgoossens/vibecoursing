@@ -61,6 +61,35 @@ type SessionTerm = {
   exposureCount: number;
 };
 
+type SessionTranscriptMessage = {
+  id: Id<'sessionMessages'>;
+  role: 'user' | 'assistant';
+  body: string;
+  createdAt: number;
+  termsCovered: string[];
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+};
+
+type SessionFollowUp = {
+  id: Id<'sessionFollowUps'>;
+  prompt: string;
+  rationale: string | null;
+  createdAt: number;
+  usedAt: number | null;
+};
+
+type SessionPhaseProgress = {
+  index: number;
+  name: string;
+  objective: string;
+  totalTerms: number;
+  completedTerms: number;
+  remainingTerms: string[];
+  isComplete: boolean;
+};
+
 function cleanString(value?: string | null) {
   if (value === undefined || value === null) {
     return undefined;
@@ -231,6 +260,34 @@ function mapTermDoc(term: Doc<'sessionTerms'>): SessionTerm {
     firstCoveredAt: term.firstCoveredAt ?? null,
     exposureCount: term.exposureCount ?? 0,
   };
+}
+
+function buildPhaseProgressSnapshot(
+  phases: Doc<'sessionPhases'>[],
+  termState: Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>
+): SessionPhaseProgress[] {
+  return phases.map((phase) => {
+    const termsForPhase: Doc<'sessionTerms'>[] = [];
+    for (const term of termState.values()) {
+      if (term.phaseIndex === phase.index) {
+        termsForPhase.push(term);
+      }
+    }
+    const remainingTerms = termsForPhase
+      .filter((term) => term.firstCoveredAt === undefined)
+      .map((term) => term.term)
+      .sort((a, b) => a.localeCompare(b));
+    const completedTerms = termsForPhase.length - remainingTerms.length;
+    return {
+      index: phase.index,
+      name: phase.name,
+      objective: phase.objective,
+      totalTerms: termsForPhase.length,
+      completedTerms,
+      remainingTerms,
+      isComplete: termsForPhase.length > 0 && remainingTerms.length === 0,
+    };
+  });
 }
 
 export const syncUserProfile = mutation({
@@ -502,6 +559,80 @@ export const getSessionOverview = query({
         ...mapPhaseDoc(phaseDoc),
         terms: termsByPhase.get(phaseDoc.index) ?? [],
       })),
+    };
+  },
+});
+
+export const getSessionTranscript = query({
+  args: {
+    sessionId: v.id('learningSessions'),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireIdentity(ctx);
+    const user = await fetchUserBySubject(ctx, identity.subject);
+    if (!user) {
+      throw new ConvexError('USER_PROFILE_MISSING');
+    }
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== user._id) {
+      throw new ConvexError('SESSION_NOT_FOUND');
+    }
+
+    const messageDocs = await ctx.db
+      .query('sessionMessages')
+      .withIndex('by_session_createdAt', (q) => q.eq('sessionId', args.sessionId))
+      .order('asc')
+      .collect();
+
+    const followUpDocs = await ctx.db
+      .query('sessionFollowUps')
+      .withIndex('by_session', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+    followUpDocs.sort((a, b) => a.createdAt - b.createdAt);
+
+    const phaseDocs = await ctx.db
+      .query('sessionPhases')
+      .withIndex('by_session_index', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+    phaseDocs.sort((a, b) => a.index - b.index);
+
+    const termDocs = await ctx.db
+      .query('sessionTerms')
+      .withIndex('by_session', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+
+    const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
+    for (const term of termDocs) {
+      termState.set(term._id, term);
+    }
+
+    const phaseProgress = buildPhaseProgressSnapshot(phaseDocs, termState);
+
+    const messages: SessionTranscriptMessage[] = messageDocs.map((message) => ({
+      id: message._id,
+      role: message.role,
+      body: message.body,
+      createdAt: message.createdAt,
+      termsCovered: message.termsCovered ?? [],
+      promptTokens: message.promptTokens ?? null,
+      completionTokens: message.completionTokens ?? null,
+      totalTokens: message.totalTokens ?? null,
+    }));
+
+    const followUps: SessionFollowUp[] = followUpDocs.map((followUp) => ({
+      id: followUp._id,
+      prompt: followUp.prompt,
+      rationale: followUp.rationale ?? null,
+      createdAt: followUp.createdAt,
+      usedAt: followUp.usedAt ?? null,
+    }));
+
+    return {
+      session: mapSessionDocToSummary(session),
+      messages,
+      followUps,
+      phaseProgress,
     };
   },
 });
