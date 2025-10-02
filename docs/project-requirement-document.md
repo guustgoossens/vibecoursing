@@ -144,4 +144,8 @@
 > 2. Outline Convex schema in detail.
 > 3. Draft initial prompt templates.
 
+- **Phase 4 – AI Interaction Layer:** Introduce the topic intake + learning-plan bootstrap, wire chat UI to `chatTurn`, persist AI/user transcripts with progress tracking, and extend the sidebar to resume sessions.
+- **Phase 5 – Guidance & Recap Polish:** Capture follow-up telemetry, surface recaps, add onboarding walkthroughs, and tighten analytics/accessibility for Mistral-powered flows.
+- See `docs/mistral_implementation_phases.md` for full details and acceptance criteria.
+
 Return to the [Table of Contents](#table-of-contents) for quick navigation.

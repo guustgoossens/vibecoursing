@@ -23,11 +23,18 @@ All AI-driven behaviors—including conversational replies, follow-up prompts, p
   - Implementation: Empty channel/message states surface direct guidance, inline mutation errors surface near the composer, and unauthenticated visitors hit the sign-in CTA.
 - **Acceptance**: Authenticated users see live channel updates, can send messages from the UI, and changes propagate instantly across open clients.
 
-## Phase 3 – CRUD & Polish
-- **Channel management**: Add create/rename/delete flows with simple modals, reuse Convex mutations with validation (unique names, authorisation checks), and surface confirmation prompts for destructive actions.
-- **Membership controls**: Leverage `channelMembers` for inviting/removing users (start with email-based invites or simple public/private toggle) while respecting WorkOS identities.
-- **Message refinement**: Support edit/delete for the author’s messages, writing audit metadata (edited flag, deleted marker) so history stays consistent.
-- **Quality pass**: Add smoke tests for critical Convex functions, ensure Tailwind components meet accessibility basics, and capture follow-up tasks (typing indicators, file uploads) in backlog.
-- **Acceptance**: Team can manage channels and messages end-to-end with guardrails, and the codebase is ready for incremental enhancements without refactors.
+## Phase 3 – AI Interaction Layer
+- **Learning session bootstrap**: Introduce a topic intake flow that calls the `generatePlan` action, persists the plan (topic, phases, key terms) in Convex, and initializes a learning session tied to the WorkOS user.
+- **AI-powered conversation**: Replace the human-only composer with an AI chat loop that pipes learner prompts to `chatTurn`, stores AI/user messages with role metadata, and renders Mistral follow-up prompts as selectable chips beneath responses.
+- **Progress instrumentation**: Track term exposure per message, update phase/overall progress in Convex, and render real progress UI elements (plan summary panel, progress bar, learned terms list) alongside the conversation.
+- **Session persistence**: Extend the sidebar to list learning sessions/topics with progress indicators and allow resuming by rehydrating plan and transcript state from Convex.
+- **Acceptance**: Authenticated learners can launch a topic, converse with the AI, act on suggested follow-ups, and watch progress indicators update in real time, with session state restoring on refresh.
 
-Deliver this MVP iteratively—ship Phase 1 to unblock backend work, layer Phase 2 UI quickly for feedback, then add Phase 3 refinement once core flows feel right.
+## Phase 4 – Guidance & Recap Polish
+- **Follow-up refinements**: Capture telemetry on follow-up prompt usage, add optimistic UI states, and let learners hide/show prompt chips mid-session.
+- **Recap & completion**: Trigger `generateFollowUps` and an early `generateRecap` action when phases complete, persisting summaries and nudging learners toward next steps.
+- **Onboarding & tooltips**: Layer in first-run walkthroughs that explain the plan panel, follow-up prompts, and progress logic for new learners.
+- **Quality + analytics pass**: Add client/server logging for AI interactions, ensure accessibility coverage for AI components, and expand docs on configuring Mistral env vars plus rate-limit mitigations.
+- **Acceptance**: Learners receive structured follow-ups, completion recaps, and onboarding cues, with analytics capturing key AI engagement events.
+
+Deliver this MVP iteratively—ship Phase 1 to unblock backend work, layer Phase 2 UI quickly for feedback, deepen the AI interaction in Phase 3, then polish guidance and analytics in Phase 4.
