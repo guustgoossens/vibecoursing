@@ -7,8 +7,13 @@ import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { Components as ReactMarkdownComponents } from 'react-markdown';
+import type { ComponentPropsWithoutRef } from 'react';
+import type { Components as ReactMarkdownComponents, ExtraProps } from 'react-markdown';
 import type { Id } from '@/convex/_generated/dataModel';
+
+type MarkdownCodeProps = ComponentPropsWithoutRef<'code'> & ExtraProps & {
+  inline?: boolean;
+};
 
 type AuthLikeUser = {
   email?: string | null;
@@ -153,13 +158,15 @@ const markdownComponents: ReactMarkdownComponents = {
     <a
       {...props}
       href={href}
+      target="_blank"
+      rel="noreferrer"
       className="font-medium text-blue-600 underline-offset-4 hover:underline dark:text-blue-400"
     >
       {children}
     </a>
   ),
   hr: (props) => <hr {...props} className="my-4 border-slate-200 dark:border-slate-700" />,
-  code: ({ inline, className, children, ...props }) => {
+  code: ({ inline, className, children, ...props }: MarkdownCodeProps) => {
     if (inline) {
       return (
         <code
@@ -714,7 +721,8 @@ function SessionTranscriptPanel({
   const messageContainerRef = useRef<HTMLDivElement>(null);
 
   const isLoading = transcript === undefined;
-  const messages = transcript?.messages ?? [];
+  const rawMessages = transcript?.messages;
+  const messages = useMemo(() => rawMessages ?? [], [rawMessages]);
   const latestAssistantMessageId = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const candidate = messages[index];
@@ -870,14 +878,11 @@ function TranscriptMessageBody({ body }: { body: string }) {
   }
 
   return (
-    <ReactMarkdown
-      className="mt-2 space-y-3 text-sm leading-6 text-foreground"
-      remarkPlugins={[remarkGfm]}
-      components={markdownComponents}
-      linkTarget="_blank"
-    >
-      {body}
-    </ReactMarkdown>
+    <div className="mt-2 space-y-3 text-sm leading-6 text-foreground">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {body}
+      </ReactMarkdown>
+    </div>
   );
 }
 
