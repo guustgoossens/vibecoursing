@@ -1,6 +1,6 @@
 'use client';
 
-import { Authenticated, Unauthenticated, useMutation, useQuery } from 'convex/react';
+import { Authenticated, Unauthenticated, useAction, useMutation, useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
@@ -39,6 +39,30 @@ type SessionSummary = {
   completedTerms: number;
   totalTerms: number;
 };
+
+type GeneratedPlanPhase = {
+  name: string;
+  objective: string;
+  keyTerms: string[];
+};
+
+type GeneratedPlan = {
+  topic: string;
+  tone?: string;
+  summary?: string;
+  phases: GeneratedPlanPhase[];
+};
+
+class PlanValidationError extends Error {
+  code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'PlanValidationError';
+    this.code = code;
+    Object.setPrototypeOf(this, PlanValidationError.prototype);
+  }
+}
 
 function deriveProfileFields(user: AuthLikeUser | null | undefined): DerivedProfile {
   if (!user) {
@@ -120,6 +144,10 @@ function Content() {
     setActiveSessionId((current) => (current === sessionId ? current : sessionId));
   }, []);
 
+  const handleSessionCreated = useCallback((sessionId: Id<'learningSessions'>) => {
+    setActiveSessionId(sessionId);
+  }, []);
+
   if (bootstrap === undefined || sessions === undefined) {
     return (
       <ChatLayout
@@ -140,7 +168,14 @@ function Content() {
           onSelectSession={handleSelectSession}
         />
       }
-      main={<SessionLanding viewer={viewer} session={activeSession} hasSessions={sessions.length > 0} />}
+      main={
+        <SessionLanding
+          viewer={viewer}
+          session={activeSession}
+          hasSessions={sessions.length > 0}
+          onSessionCreated={handleSessionCreated}
+        />
+      }
     />
   );
 }
@@ -179,7 +214,7 @@ function SessionSidebar({
       </div>
       <nav className="flex-1 overflow-y-auto">
         {sessions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No sessions yet—use the main panel to create your first topic.</p>
+          <p className="text-sm text-muted-foreground">No sessions yet—use the intake form to create your first topic.</p>
         ) : (
           <ul className="flex flex-col gap-2 text-sm">
             {sessions.map((session) => {
@@ -236,28 +271,37 @@ function SessionLanding({
   viewer,
   session,
   hasSessions,
+  onSessionCreated,
 }: {
   viewer: ViewerSummary;
   session: SessionSummary | null;
   hasSessions: boolean;
+  onSessionCreated: (sessionId: Id<'learningSessions'>) => void;
 }) {
+  let primaryPanel: JSX.Element;
+
   if (!hasSessions) {
-    return <EmptySessionState viewer={viewer} />;
+    primaryPanel = <EmptySessionState viewer={viewer} />;
+  } else if (!session) {
+    primaryPanel = <MissingSessionSelectionState />;
+  } else {
+    primaryPanel = <SessionOverviewCard session={session} />;
   }
 
-  if (!session) {
-    return <MissingSessionSelectionState />;
-  }
-
-  return <SessionOverviewCard session={session} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
+      {primaryPanel}
+      <SessionIntake onSessionCreated={onSessionCreated} />
+    </div>
+  );
 }
 
 function EmptySessionState({ viewer }: { viewer: ViewerSummary }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-slate-300 bg-muted/20 px-6 py-10 text-center dark:border-slate-700/70">
       <h2 className="text-lg font-semibold">Welcome{viewer?.name ? `, ${viewer.name}` : ''}!</h2>
       <p className="max-w-sm text-sm text-muted-foreground">
-        Use this workspace to design guided learning sessions. Start by drafting a topic plan and we will track your progress phase by phase.
+        Use the intake form below to draft your first guided learning session. Vibecoursing will turn a topic into a phased plan and track your progress.
       </p>
     </div>
   );
@@ -265,9 +309,9 @@ function EmptySessionState({ viewer }: { viewer: ViewerSummary }) {
 
 function MissingSessionSelectionState() {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-muted-foreground">
-      <h3 className="text-sm font-medium">Select a session to view its progress</h3>
-      <p className="max-w-sm text-sm">Pick any session from the sidebar to continue learning.</p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-slate-300 bg-muted/20 px-6 py-10 text-center text-muted-foreground dark:border-slate-700/70">
+      <h3 className="text-sm font-medium text-foreground">Select a session to view its progress</h3>
+      <p className="max-w-sm text-sm">Pick any session from the sidebar or start a new one using the intake form below.</p>
     </div>
   );
 }
@@ -279,7 +323,7 @@ function SessionOverviewCard({ session }: { session: SessionSummary }) {
     session.currentPhaseIndex !== null ? `Currently in phase ${session.currentPhaseIndex + 1} of ${session.totalPhases}` : 'Phase status pending';
 
   return (
-    <div className="flex flex-1 flex-col gap-4 px-6 py-8">
+    <div className="flex flex-1 flex-col gap-4 rounded-md border border-slate-200 bg-background px-6 py-6 shadow-sm dark:border-slate-700">
       <div>
         <h1 className="text-2xl font-semibold text-foreground">{session.topic}</h1>
         <p className="text-sm text-muted-foreground">{currentPhaseLabel}</p>
@@ -297,7 +341,7 @@ function SessionOverviewCard({ session }: { session: SessionSummary }) {
         />
       </div>
       <div className="rounded-md border border-dashed border-slate-300 bg-muted/30 p-4 text-sm text-muted-foreground dark:border-slate-700/70">
-        Session transcripts and AI prompts will appear here once the intake flow is wired up.
+        Session transcripts and AI prompts will appear here once the conversation flow is connected.
       </div>
     </div>
   );
@@ -317,6 +361,152 @@ function SessionMetric({
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
       <div className="mt-2 text-xl font-semibold text-foreground">{value}</div>
       {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
+    </div>
+  );
+}
+
+function SessionIntake({ onSessionCreated }: { onSessionCreated: (sessionId: Id<'learningSessions'>) => void }) {
+  const generatePlan = useAction(api.mistral.generatePlan);
+  const createLearningSession = useMutation(api.chat.createLearningSession);
+
+  const [topic, setTopic] = useState('');
+  const [learnerProfile, setLearnerProfile] = useState('');
+  const [tone, setTone] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [lastPlan, setLastPlan] = useState<GeneratedPlan | null>(null);
+
+  const canSubmit = topic.trim().length > 0 && !isSubmitting;
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedTopic = topic.trim();
+    if (trimmedTopic.length === 0) {
+      setError('Enter a topic to generate a learning plan.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+    setSuccessMessage(null);
+    setLastPlan(null);
+
+    try {
+      const planResult = await generatePlan({
+        topic: trimmedTopic,
+        learnerProfile: learnerProfile.trim() || undefined,
+        tone: tone.trim() || undefined,
+      });
+
+      const plan = normaliseGeneratedPlan(planResult.plan);
+      const { sessionId } = await createLearningSession({ plan });
+
+      setLastPlan(plan);
+      setSuccessMessage(`Created a new session for "${plan.topic}".`);
+      setTopic('');
+      onSessionCreated(sessionId);
+    } catch (err) {
+      console.error('Session intake failed', err);
+      setError(normaliseIntakeError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-background p-6 shadow-sm dark:border-slate-700">
+      <h3 className="text-base font-semibold text-foreground">Start a new learning session</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Share a topic (and optional learner context). Vibecoursing will draft phases and key terms, then store the plan in Convex.
+      </p>
+      <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <label htmlFor="session-topic" className="text-sm font-medium text-foreground">
+            Topic
+          </label>
+          <input
+            id="session-topic"
+            value={topic}
+            onChange={(event) => setTopic(event.target.value)}
+            placeholder="e.g. Storytelling fundamentals for product demos"
+            className="w-full rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <label htmlFor="session-learner" className="text-sm font-medium text-foreground">
+            Learner context (optional)
+          </label>
+          <textarea
+            id="session-learner"
+            value={learnerProfile}
+            onChange={(event) => setLearnerProfile(event.target.value)}
+            rows={3}
+            placeholder="Who is this for? Prior knowledge, constraints, desired outcomes."
+            className="w-full resize-y rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <label htmlFor="session-tone" className="text-sm font-medium text-foreground">
+            Preferred tone (optional)
+          </label>
+          <input
+            id="session-tone"
+            value={tone}
+            onChange={(event) => setTone(event.target.value)}
+            placeholder="Encouraging, pragmatic, playful..."
+            className="w-full rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+          />
+        </div>
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <span className="text-xs text-muted-foreground">Plans save instantly so you can jump into a session right away.</span>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
+              isSubmitting ? 'cursor-progress' : ''
+            }`}
+          >
+            {isSubmitting ? 'Generating…' : 'Generate plan'}
+          </button>
+        </div>
+        {error && (
+          <p className="text-xs text-red-500" role="alert" aria-live="assertive">
+            {error}
+          </p>
+        )}
+        {successMessage && (
+          <p className="text-xs text-emerald-600" role="status" aria-live="polite">
+            {successMessage}
+          </p>
+        )}
+      </form>
+      {lastPlan && <PlanPreview plan={lastPlan} />}
+    </div>
+  );
+}
+
+function PlanPreview({ plan }: { plan: GeneratedPlan }) {
+  return (
+    <div className="mt-4 rounded-md border border-dashed border-slate-300 bg-muted/30 p-4 text-sm text-foreground shadow-sm dark:border-slate-700/70">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Plan saved</span>
+      <h4 className="mt-2 text-base font-semibold text-foreground">{plan.topic}</h4>
+      {plan.summary && <p className="text-sm text-muted-foreground">{plan.summary}</p>}
+      <ol className="mt-3 space-y-3">
+        {plan.phases.map((phase, index) => (
+          <li key={`${phase.name}-${index}`} className="rounded-md border border-slate-200 bg-background p-3 shadow-sm dark:border-slate-700">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">Phase {index + 1}</span>
+              <span>{phase.name}</span>
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">{phase.objective}</p>
+            <div className="mt-2 text-xs text-muted-foreground">
+              Key terms:{' '}
+              <span className="font-medium text-foreground">{phase.keyTerms.join(', ')}</span>
+            </div>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -365,4 +555,82 @@ function UserMenu({ user, onSignOut }: { user: AuthLikeUser; onSignOut: () => vo
       </button>
     </div>
   );
+}
+
+function normaliseGeneratedPlan(plan: unknown): GeneratedPlan {
+  if (typeof plan !== 'object' || plan === null) {
+    throw new PlanValidationError('plan.invalid', 'The generated plan was invalid. Please try again.');
+  }
+
+  const raw = plan as Record<string, unknown>;
+  const topic = typeof raw.topic === 'string' ? raw.topic.trim() : '';
+  if (!topic) {
+    throw new PlanValidationError('plan.topic_missing', 'The generated plan did not include a topic.');
+  }
+
+  const phasesInput = Array.isArray(raw.phases) ? raw.phases : [];
+  const phases: GeneratedPlanPhase[] = [];
+
+  for (const candidate of phasesInput) {
+    if (typeof candidate !== 'object' || candidate === null) {
+      continue;
+    }
+    const phaseRaw = candidate as Record<string, unknown>;
+    const name = typeof phaseRaw.name === 'string' ? phaseRaw.name.trim() : '';
+    const objective = typeof phaseRaw.objective === 'string' ? phaseRaw.objective.trim() : '';
+    const keyTermsRaw = Array.isArray(phaseRaw.keyTerms) ? phaseRaw.keyTerms : [];
+    const keyTerms = keyTermsRaw
+      .map((term) => (typeof term === 'string' ? term.trim() : ''))
+      .filter((term): term is string => term.length > 0);
+
+    const uniqueTerms = Array.from(new Set(keyTerms));
+
+    if (!name || !objective || uniqueTerms.length === 0) {
+      continue;
+    }
+
+    phases.push({ name, objective, keyTerms: uniqueTerms });
+  }
+
+  if (phases.length === 0) {
+    throw new PlanValidationError('plan.phases_missing', 'The generated plan did not contain any usable phases.');
+  }
+
+  const tone = typeof raw.tone === 'string' ? raw.tone.trim() : undefined;
+  const summary = typeof raw.summary === 'string' ? raw.summary.trim() : undefined;
+
+  return {
+    topic,
+    tone: tone && tone.length > 0 ? tone : undefined,
+    summary: summary && summary.length > 0 ? summary : undefined,
+    phases,
+  };
+}
+
+function normaliseIntakeError(error: unknown): string {
+  if (error instanceof PlanValidationError) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    const message = error.message ?? '';
+    if (message.includes('MISTRAL_PLAN_PARSE_FAILED')) {
+      return 'Mistral returned an invalid plan. Please try again.';
+    }
+    if (message.includes('MISTRAL_REQUEST_FAILED')) {
+      return 'We could not reach Mistral. Try again in a moment.';
+    }
+    if (message.includes('MISTRAL_API_KEY_NOT_CONFIGURED')) {
+      return 'Mistral API key is not configured on the server.';
+    }
+    if (message.includes('PLAN_TOPIC_REQUIRED')) {
+      return 'The generated plan was missing a topic. Try rephrasing your prompt.';
+    }
+    if (message.includes('PLAN_PHASES_REQUIRED')) {
+      return 'The generated plan did not include any phases. Please try again.';
+    }
+    if (message.includes('PLAN_PHASE_TERMS_REQUIRED')) {
+      return 'At least one phase was missing key terms. Regenerate the plan to continue.';
+    }
+  }
+  return 'Something went wrong while creating the session. Please try again.';
 }
