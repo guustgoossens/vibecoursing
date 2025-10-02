@@ -1,5 +1,6 @@
 import { action } from './_generated/server';
 import type { ActionCtx } from './_generated/server';
+import type { Doc, Id } from './_generated/dataModel';
 import { ConvexError, v } from 'convex/values';
 
 const DEFAULT_MODEL = 'mistral-large-latest';
@@ -25,6 +26,16 @@ type CallMistralOptions = {
   maxTokens?: number;
   systemPrompt?: string;
   messages: ChatMessage[];
+};
+
+type PhaseProgress = {
+  index: number;
+  name: string;
+  objective: string;
+  totalTerms: number;
+  completedTerms: number;
+  remainingTerms: string[];
+  isComplete: boolean;
 };
 
 const messageSchema = v.object({
@@ -60,6 +71,76 @@ produce up to three short follow-up prompt suggestions. Respond with JSON in the
 
 const RECAP_SYSTEM_PROMPT = `You are a concise learning companion. Summarize the learner's progress in under 120 words, reinforcing completed goals
 and highlighting one suggestion for next time.`;
+
+function cleanString(value?: string | null) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+async function fetchUserByExternalId(ctx: ActionCtx, externalId: string) {
+  return ctx.db
+    .query('users')
+    .withIndex('by_external_id', (q) => q.eq('externalId', externalId))
+    .unique();
+}
+
+function detectCoveredTerms(body: string, terms: Doc<'sessionTerms'>[]): Doc<'sessionTerms'>[] {
+  const lowerBody = body.toLowerCase();
+  const matches: Doc<'sessionTerms'>[] = [];
+  for (const term of terms) {
+    const candidate = term.term.trim().toLowerCase();
+    if (candidate.length === 0) {
+      continue;
+    }
+    if (lowerBody.includes(candidate)) {
+      matches.push(term);
+    }
+  }
+  return matches;
+}
+
+function buildPhaseProgress(
+  phases: Doc<'sessionPhases'>[],
+  termState: Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>
+): PhaseProgress[] {
+  return phases.map((phase) => {
+    const termsForPhase: Doc<'sessionTerms'>[] = [];
+    for (const term of termState.values()) {
+      if (term.phaseIndex === phase.index) {
+        termsForPhase.push(term);
+      }
+    }
+    const remaining = termsForPhase.filter((term) => term.firstCoveredAt === undefined).map((term) => term.term);
+    const completedTerms = termsForPhase.length - remaining.length;
+    return {
+      index: phase.index,
+      name: phase.name,
+      objective: phase.objective,
+      totalTerms: termsForPhase.length,
+      completedTerms,
+      remainingTerms: remaining,
+      isComplete: termsForPhase.length > 0 && remaining.length === 0,
+    };
+  });
+}
+
+function buildPlanContext(session: Doc<'learningSessions'>, phaseProgress: PhaseProgress[]) {
+  return {
+    topic: session.topic,
+    tone: session.planTone ?? session.tone ?? null,
+    phases: phaseProgress.map((phase) => ({
+      index: phase.index,
+      name: phase.name,
+      objective: phase.objective,
+      remainingTerms: phase.remainingTerms,
+      completedTerms: phase.completedTerms,
+      totalTerms: phase.totalTerms,
+    })),
+  };
+}
 
 async function callMistral({ ctx: _ctx, model, temperature, maxTokens, systemPrompt, messages }: CallMistralOptions) {
   const apiKey = process.env.MISTRAL_API_KEY;
@@ -240,7 +321,190 @@ export const generateRecap = action({
     return {
       recap: content.trim(),
       usage,
-      raw,
+    raw,
+  };
+  },
+});
+
+export const runSessionTurn = action({
+  args: {
+    sessionId: v.id('learningSessions'),
+    prompt: v.string(),
+    followUpId: v.optional(v.id('sessionFollowUps')),
+    temperature: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError('NOT_AUTHENTICATED');
+    }
+
+    const user = await fetchUserByExternalId(ctx, identity.subject);
+    if (!user) {
+      throw new ConvexError('USER_PROFILE_MISSING');
+    }
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.userId !== user._id) {
+      throw new ConvexError('SESSION_NOT_FOUND');
+    }
+
+    let followUp: Doc<'sessionFollowUps'> | null = null;
+    if (args.followUpId) {
+      followUp = await ctx.db.get(args.followUpId);
+      if (!followUp || followUp.sessionId !== session._id) {
+        throw new ConvexError('FOLLOW_UP_NOT_FOUND');
+      }
+    }
+
+    const trimmedPrompt = cleanString(args.prompt);
+    if (!trimmedPrompt) {
+      throw new ConvexError('EMPTY_MESSAGE');
+    }
+
+    const userCreatedAt = Date.now();
+    const userMessageId = await ctx.db.insert('sessionMessages', {
+      sessionId: session._id,
+      role: 'user',
+      body: trimmedPrompt,
+      createdAt: userCreatedAt,
+    });
+
+    if (followUp) {
+      await ctx.db.patch(followUp._id, { usedAt: userCreatedAt });
+    }
+
+    const phaseDocs = await ctx.db
+      .query('sessionPhases')
+      .withIndex('by_session_index', (q) => q.eq('sessionId', session._id))
+      .collect();
+    phaseDocs.sort((a, b) => a.index - b.index);
+
+    const termDocs = await ctx.db
+      .query('sessionTerms')
+      .withIndex('by_session', (q) => q.eq('sessionId', session._id))
+      .collect();
+
+    const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
+    for (const term of termDocs) {
+      termState.set(term._id, term);
+    }
+
+    const phaseProgressBefore = buildPhaseProgress(phaseDocs, termState);
+    const planContext = buildPlanContext(session, phaseProgressBefore);
+
+    const transcriptDocs = await ctx.db
+      .query('sessionMessages')
+      .withIndex('by_session_createdAt', (q) => q.eq('sessionId', session._id))
+      .order('desc')
+      .take(40);
+    transcriptDocs.reverse();
+
+    const transcriptMessages: ChatMessage[] = transcriptDocs.map((message) => ({
+      role: message.role,
+      content: message.body,
+    }));
+
+    const planMessage: ChatMessage | null = planContext
+      ? {
+          role: 'system',
+          content: `Learning plan context:\n${JSON.stringify(planContext)}`,
+        }
+      : null;
+
+    const messagesForMistral = planMessage ? [planMessage, ...transcriptMessages] : transcriptMessages;
+
+    const { content, usage } = await callMistral({
+      ctx,
+      messages: messagesForMistral,
+      temperature: args.temperature ?? 0.6,
+      maxTokens: 600,
+      systemPrompt:
+        'You are Vibecoursing, an enthusiastic and empathetic learning companion. Provide actionable guidance, keep replies under 180 words, and favour follow-up questions that reinforce key terms.',
+    });
+
+    const assistantBody = content.trim();
+    const assistantCreatedAt = Date.now();
+    const coveredTerms = detectCoveredTerms(assistantBody, termDocs);
+    const coveredTermNames = Array.from(new Set(coveredTerms.map((term) => term.term)));
+    const newlyCoveredTerms: string[] = [];
+
+    for (const term of coveredTerms) {
+      const currentState = termState.get(term._id);
+      if (!currentState) {
+        continue;
+      }
+      const exposureCount = (currentState.exposureCount ?? 0) + 1;
+      const firstCoveredAt = currentState.firstCoveredAt ?? assistantCreatedAt;
+      await ctx.db.patch(term._id, {
+        exposureCount,
+        firstCoveredAt,
+      });
+      termState.set(term._id, {
+        ...currentState,
+        exposureCount,
+        firstCoveredAt,
+      });
+      if (!currentState.firstCoveredAt) {
+        newlyCoveredTerms.push(term.term);
+      }
+    }
+
+    const assistantMessageId = await ctx.db.insert('sessionMessages', {
+      sessionId: session._id,
+      role: 'assistant',
+      body: assistantBody,
+      createdAt: assistantCreatedAt,
+      termsCovered: coveredTermNames,
+      promptTokens: usage?.promptTokens,
+      completionTokens: usage?.completionTokens,
+      totalTokens: usage?.totalTokens,
+    });
+
+    const phaseProgressAfter = buildPhaseProgress(phaseDocs, termState);
+    const completedTermsCount = Array.from(termState.values()).filter((term) => term.firstCoveredAt !== undefined)
+      .length;
+    const completedPhasesCount = phaseProgressAfter.filter((phase) => phase.isComplete).length;
+    const nextPhase = phaseProgressAfter.find((phase) => !phase.isComplete);
+    const currentPhaseIndex = nextPhase ? nextPhase.index : null;
+
+    await ctx.db.patch(session._id, {
+      updatedAt: assistantCreatedAt,
+      completedTerms: completedTermsCount,
+      completedPhases: completedPhasesCount,
+      currentPhaseIndex: currentPhaseIndex ?? undefined,
+    });
+
+    const updatedSession = await ctx.db.get(session._id);
+    if (!updatedSession) {
+      throw new ConvexError('SESSION_NOT_FOUND_AFTER_UPDATE');
+    }
+
+    return {
+      session: {
+        id: updatedSession._id,
+        topic: updatedSession.topic,
+        completedTerms: updatedSession.completedTerms,
+        totalTerms: updatedSession.totalTerms,
+        completedPhases: updatedSession.completedPhases,
+        totalPhases: updatedSession.totalPhases,
+        currentPhaseIndex: updatedSession.currentPhaseIndex ?? null,
+        updatedAt: updatedSession.updatedAt,
+      },
+      userMessage: {
+        id: userMessageId,
+        body: trimmedPrompt,
+        createdAt: userCreatedAt,
+      },
+      assistantMessage: {
+        id: assistantMessageId,
+        body: assistantBody,
+        createdAt: assistantCreatedAt,
+        termsCovered: coveredTermNames,
+        usage,
+      },
+      newlyCoveredTerms,
+      phaseProgress: phaseProgressAfter,
     };
   },
 });
