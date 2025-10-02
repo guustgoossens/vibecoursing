@@ -70,6 +70,7 @@ type SessionFollowUpSuggestion = {
   rationale: string | null;
   createdAt: number;
   usedAt: number | null;
+  generatedForMessageId: Id<'sessionMessages'>;
 };
 
 type SessionPhaseProgress = {
@@ -472,7 +473,19 @@ function SessionTranscriptPanel({
 
   const isLoading = transcript === undefined;
   const messages = transcript?.messages ?? [];
-  const followUps = (transcript?.followUps ?? []).filter((followUp) => followUp.usedAt === null);
+  const latestAssistantMessageId = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (candidate && candidate.role === 'assistant') {
+        return candidate.id;
+      }
+    }
+    return null;
+  }, [messages]);
+  const followUps = (transcript?.followUps ?? []).filter(
+    (followUp) =>
+      followUp.usedAt === null && (!latestAssistantMessageId || followUp.generatedForMessageId === latestAssistantMessageId)
+  );
 
   useEffect(() => {
     if (!messageContainerRef.current) {
@@ -490,29 +503,34 @@ function SessionTranscriptPanel({
     }
   }, [followUps, selectedFollowUp]);
 
-  const sendTurn = useCallback(async () => {
-    const trimmed = draft.trim();
-    if (trimmed.length === 0) {
-      setError('Enter a message to continue the session.');
-      return;
-    }
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      await runSessionTurn({
-        sessionId,
-        prompt: trimmed,
-        followUpId: selectedFollowUp ?? undefined,
-      });
-      setDraft('');
-      setSelectedFollowUp(null);
-    } catch (err) {
-      console.error('Failed to run session turn', err);
-      setError(normaliseSessionTurnError(err));
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [draft, runSessionTurn, selectedFollowUp, sessionId]);
+  const sendTurn = useCallback(
+    async (options?: { prompt?: string; followUpId?: Id<'sessionFollowUps'> }) => {
+      const sourcePrompt = options?.prompt ?? draft;
+      const trimmed = sourcePrompt.trim();
+      if (trimmed.length === 0) {
+        setError('Enter a message to continue the session.');
+        return;
+      }
+      setDraft(sourcePrompt);
+      setIsSubmitting(true);
+      setError(null);
+      try {
+        await runSessionTurn({
+          sessionId,
+          prompt: trimmed,
+          followUpId: options?.followUpId ?? selectedFollowUp ?? undefined,
+        });
+        setDraft('');
+        setSelectedFollowUp(null);
+      } catch (err) {
+        console.error('Failed to run session turn', err);
+        setError(normaliseSessionTurnError(err));
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [draft, runSessionTurn, selectedFollowUp, sessionId]
+  );
 
   const handleDraftChange = useCallback((value: string) => {
     setDraft(value);
@@ -523,11 +541,14 @@ function SessionTranscriptPanel({
 
   const handleSelectFollowUp = useCallback(
     (followUp: SessionFollowUpSuggestion) => {
-      setDraft(followUp.prompt);
+      if (isSubmitting) {
+        return;
+      }
       setSelectedFollowUp(followUp.id);
       setError(null);
+      void sendTurn({ prompt: followUp.prompt, followUpId: followUp.id });
     },
-    []
+    [isSubmitting, sendTurn]
   );
 
   return (

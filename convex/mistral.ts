@@ -102,6 +102,39 @@ function extractJsonPayload(raw: string): string {
   return trimmed;
 }
 
+type FollowUpSuggestion = {
+  prompt: string;
+  rationale: string | null;
+};
+
+function normaliseFollowUpSuggestions(payload: unknown): FollowUpSuggestion[] {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  const rawPrompts = Array.isArray((payload as { prompts?: unknown }).prompts)
+    ? ((payload as { prompts: unknown[] }).prompts)
+    : [];
+
+  const suggestions: FollowUpSuggestion[] = [];
+  for (const entry of rawPrompts) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const prompt = cleanString((entry as { prompt?: unknown }).prompt as string | undefined);
+    if (!prompt) {
+      continue;
+    }
+    const rationale = cleanString((entry as { rationale?: unknown }).rationale as string | undefined) ?? null;
+    suggestions.push({ prompt, rationale });
+    if (suggestions.length === 3) {
+      break;
+    }
+  }
+
+  return suggestions;
+}
+
 function detectCoveredTerms(body: string, terms: Doc<'sessionTerms'>[]): Doc<'sessionTerms'>[] {
   const lowerBody = body.toLowerCase();
   const matches: Doc<'sessionTerms'>[] = [];
@@ -302,6 +335,49 @@ export const logSessionUserMessage = internalMutation({
         createdAt,
       },
     };
+  },
+});
+
+export const replaceSessionFollowUps = internalMutation({
+  args: {
+    sessionId: v.id('learningSessions'),
+    generatedForMessageId: v.id('sessionMessages'),
+    suggestions: v.array(
+      v.object({
+        prompt: v.string(),
+        rationale: v.optional(v.string()),
+      })
+    ),
+    createdAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.sessionId);
+    if (!session) {
+      throw new ConvexError('SESSION_NOT_FOUND');
+    }
+
+    const existing = await ctx.db
+      .query('sessionFollowUps')
+      .withIndex('by_session', (q) => q.eq('sessionId', args.sessionId))
+      .collect();
+
+    for (const followUp of existing) {
+      if (followUp.usedAt === undefined) {
+        await ctx.db.delete(followUp._id);
+      }
+    }
+
+    for (const suggestion of args.suggestions) {
+      await ctx.db.insert('sessionFollowUps', {
+        sessionId: args.sessionId,
+        generatedForMessageId: args.generatedForMessageId,
+        prompt: suggestion.prompt,
+        rationale: suggestion.rationale ?? undefined,
+        createdAt: args.createdAt,
+      });
+    }
+
+    return { stored: args.suggestions.length };
   },
 });
 
@@ -572,15 +648,18 @@ export const generateFollowUps = action({
       systemPrompt: FOLLOW_UP_SYSTEM_PROMPT,
     });
 
-    let prompts: unknown;
+    const jsonPayload = extractJsonPayload(content);
+    let parsed: unknown;
     try {
-      prompts = JSON.parse(content);
+      parsed = JSON.parse(jsonPayload);
     } catch (error) {
       console.error('Follow-up JSON parse failed', { error, content });
       throw new ConvexError('MISTRAL_FOLLOWUP_PARSE_FAILED');
     }
 
-    return { prompts, usage, raw };
+    const suggestions = normaliseFollowUpSuggestions(parsed);
+
+    return { prompts: suggestions, suggestions, usage, raw };
   },
 });
 
@@ -688,6 +767,45 @@ export const runSessionTurn = action({
       assistantBody,
       usage: usage ?? undefined,
     })) as RecordedAssistantTurn;
+
+    const followUpTranscript: ChatMessage[] = [...transcriptMessages, { role: 'assistant', content: assistantBody }];
+    const remainingTerms = turnResult.phaseProgress.flatMap((phase) => phase.remainingTerms);
+
+    let followUpSuggestions: FollowUpSuggestion[] = [];
+    try {
+      const { content: followUpContent } = await callMistral({
+        ctx,
+        messages: [
+          {
+            role: 'user',
+            content: `Recent transcript:\n${JSON.stringify(followUpTranscript)}\nRemaining key terms to cover: ${remainingTerms.join(', ') || 'none'}.`,
+          },
+        ],
+        temperature: 0.5,
+        maxTokens: 400,
+        systemPrompt: FOLLOW_UP_SYSTEM_PROMPT,
+      });
+
+      const followUpJson = extractJsonPayload(followUpContent);
+      const parsedFollowUps = JSON.parse(followUpJson);
+      followUpSuggestions = normaliseFollowUpSuggestions(parsedFollowUps);
+    } catch (error) {
+      console.error('Follow-up suggestion generation failed', {
+        error,
+        sessionId: args.sessionId,
+      });
+      followUpSuggestions = [];
+    }
+
+    await ctx.runMutation(internal.mistral.replaceSessionFollowUps, {
+      sessionId: args.sessionId,
+      generatedForMessageId: turnResult.assistantMessage.id,
+      suggestions: followUpSuggestions.map((suggestion) => ({
+        prompt: suggestion.prompt,
+        rationale: suggestion.rationale ?? undefined,
+      })),
+      createdAt: turnResult.assistantMessage.createdAt,
+    });
 
     return {
       session: turnResult.session,

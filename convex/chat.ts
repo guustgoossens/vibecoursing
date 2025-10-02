@@ -78,6 +78,7 @@ type SessionFollowUp = {
   rationale: string | null;
   createdAt: number;
   usedAt: number | null;
+  generatedForMessageId: Id<'sessionMessages'>;
 };
 
 type SessionPhaseProgress = {
@@ -505,7 +506,7 @@ export const listLearningSessions = query({
     const identity = await requireIdentity(ctx);
     const user = await fetchUserBySubject(ctx, identity.subject);
     if (!user) {
-      throw new ConvexError('USER_PROFILE_MISSING');
+      return [] as SessionSummary[];
     }
 
     return listSessionSummaries(ctx, user);
@@ -626,6 +627,7 @@ export const getSessionTranscript = query({
       rationale: followUp.rationale ?? null,
       createdAt: followUp.createdAt,
       usedAt: followUp.usedAt ?? null,
+      generatedForMessageId: followUp.generatedForMessageId,
     }));
 
     return {
