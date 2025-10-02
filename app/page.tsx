@@ -5,6 +5,9 @@ import { api } from '@/convex/_generated/api';
 import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { Components as ReactMarkdownComponents } from 'react-markdown';
 import type { Id } from '@/convex/_generated/dataModel';
 
 type AuthLikeUser = {
@@ -104,6 +107,100 @@ class PlanValidationError extends Error {
 
 const MAX_PROMPT_LENGTH = 2000;
 
+const markdownComponents: ReactMarkdownComponents = {
+  p: ({ children, ...props }) => (
+    <p
+      {...props}
+      className="text-sm leading-6 text-foreground [&:not(:first-child)]:mt-3"
+    >
+      {children}
+    </p>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong {...props} className="font-semibold text-foreground">
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em {...props} className="italic text-foreground">
+      {children}
+    </em>
+  ),
+  ul: ({ children, ...props }) => (
+    <ul {...props} className="ml-5 list-disc space-y-1 text-sm leading-6 text-foreground">
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol {...props} className="ml-5 list-decimal space-y-1 text-sm leading-6 text-foreground">
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }) => (
+    <li {...props} className="text-sm leading-6 text-foreground marker:text-muted-foreground">
+      {children}
+    </li>
+  ),
+  blockquote: ({ children, ...props }) => (
+    <blockquote
+      {...props}
+      className="border-l-2 border-slate-300 pl-3 text-sm italic text-muted-foreground dark:border-slate-700"
+    >
+      {children}
+    </blockquote>
+  ),
+  a: ({ children, href, ...props }) => (
+    <a
+      {...props}
+      href={href}
+      className="font-medium text-blue-600 underline-offset-4 hover:underline dark:text-blue-400"
+    >
+      {children}
+    </a>
+  ),
+  hr: (props) => <hr {...props} className="my-4 border-slate-200 dark:border-slate-700" />,
+  code: ({ inline, className, children, ...props }) => {
+    if (inline) {
+      return (
+        <code
+          {...props}
+          className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground"
+        >
+          {children}
+        </code>
+      );
+    }
+
+    return (
+      <pre className="mt-3 overflow-x-auto rounded-md bg-slate-950/90 p-3 text-sm text-slate-100">
+        <code {...props} className={className}>
+          {children}
+        </code>
+      </pre>
+    );
+  },
+  table: ({ children, ...props }) => (
+    <div className="mt-3 overflow-x-auto">
+      <table
+        {...props}
+        className="w-full table-auto text-left text-sm text-foreground"
+      >
+        {children}
+      </table>
+    </div>
+  ),
+  th: ({ children, ...props }) => (
+    <th {...props} className="border-b border-slate-200 px-3 py-2 text-left font-semibold dark:border-slate-700">
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }) => (
+    <td {...props} className="border-b border-slate-200 px-3 py-2 align-top dark:border-slate-700">
+      {children}
+    </td>
+  ),
+};
+
 function deriveProfileFields(user: AuthLikeUser | null | undefined): DerivedProfile {
   if (!user) {
     return {};
@@ -161,6 +258,7 @@ function Content() {
   const sessions = useQuery(api.chat.listLearningSessions);
 
   const [activeSessionId, setActiveSessionId] = useState<Id<'learningSessions'> | null>(null);
+  const [isIntakeOpen, setIsIntakeOpen] = useState(false);
 
   useEffect(() => {
     if (sessions === undefined) {
@@ -191,6 +289,15 @@ function Content() {
 
   const handleSessionCreated = useCallback((sessionId: Id<'learningSessions'>) => {
     setActiveSessionId(sessionId);
+    setIsIntakeOpen(false);
+  }, []);
+
+  const openIntake = useCallback(() => {
+    setIsIntakeOpen(true);
+  }, []);
+
+  const closeIntake = useCallback(() => {
+    setIsIntakeOpen(false);
   }, []);
 
   if (bootstrap === undefined || sessions === undefined) {
@@ -204,25 +311,34 @@ function Content() {
   }
 
   return (
-    <ChatLayout
-      header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
-      sidebar={
-        <SessionSidebar
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelectSession={handleSelectSession}
-        />
-      }
-      main={
-        <SessionLanding
-          viewer={viewer}
-          session={activeSession}
-          hasSessions={sessions.length > 0}
-          onSessionCreated={handleSessionCreated}
-          transcript={transcript}
-        />
-      }
-    />
+    <>
+      <ChatLayout
+        header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
+        sidebar={
+          <SessionSidebar
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={handleSelectSession}
+            onStartNewSession={openIntake}
+          />
+        }
+        main={
+          <SessionLanding
+            viewer={viewer}
+            session={activeSession}
+            hasSessions={sessions.length > 0}
+            onSessionCreated={handleSessionCreated}
+            transcript={transcript}
+            onStartNewSession={openIntake}
+          />
+        }
+      />
+      <SessionIntakeModal
+        open={isIntakeOpen}
+        onClose={closeIntake}
+        onSessionCreated={handleSessionCreated}
+      />
+    </>
   );
 }
 
@@ -247,20 +363,31 @@ function SessionSidebar({
   sessions,
   activeSessionId,
   onSelectSession,
+  onStartNewSession,
 }: {
   sessions: SessionSummary[];
   activeSessionId: Id<'learningSessions'> | null;
   onSelectSession: (sessionId: Id<'learningSessions'>) => void;
+  onStartNewSession: () => void;
 }) {
   return (
     <>
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sessions</h2>
-        <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">{sessions.length}</span>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sessions</h2>
+          <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">{sessions.length}</span>
+        </div>
+        <button
+          type="button"
+          className="rounded-md border border-slate-300 bg-background px-2.5 py-1 text-xs font-medium text-foreground shadow-sm transition hover:border-foreground hover:text-foreground dark:border-slate-700"
+          onClick={onStartNewSession}
+        >
+          New
+        </button>
       </div>
       <nav className="flex-1 overflow-y-auto">
         {sessions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No sessions yet—use the intake form to create your first topic.</p>
+          <p className="text-sm text-muted-foreground">No sessions yet—use the New button above to draft your first topic.</p>
         ) : (
           <ul className="flex flex-col gap-2 text-sm">
             {sessions.map((session) => {
@@ -319,12 +446,14 @@ function SessionLanding({
   hasSessions,
   onSessionCreated,
   transcript,
+  onStartNewSession,
 }: {
   viewer: ViewerSummary;
   session: SessionSummary | null;
   hasSessions: boolean;
   onSessionCreated: (sessionId: Id<'learningSessions'>) => void;
   transcript: SessionTranscriptData | undefined;
+  onStartNewSession: () => void;
 }) {
   if (!hasSessions) {
     return (
@@ -339,18 +468,26 @@ function SessionLanding({
     return (
       <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
         <MissingSessionSelectionState />
-        <SessionIntake onSessionCreated={onSessionCreated} />
+        <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-dashed border-slate-300 bg-muted/20 px-6 py-6 text-center text-muted-foreground dark:border-slate-700/70">
+          <p className="text-sm">Select a session in the sidebar or start a new one to begin learning.</p>
+          <button
+            type="button"
+            onClick={onStartNewSession}
+            className="rounded-md border border-slate-300 bg-background px-4 py-2 text-sm font-medium text-foreground shadow-sm transition hover:border-foreground hover:text-foreground dark:border-slate-700"
+          >
+            Start a new session
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)] xl:items-start">
         <SessionTranscriptPanel sessionId={session.id} transcript={transcript} />
         <SessionOverviewCard session={session} phaseProgress={transcript?.phaseProgress} />
       </div>
-      <SessionIntake onSessionCreated={onSessionCreated} />
     </div>
   );
 }
@@ -370,7 +507,7 @@ function MissingSessionSelectionState() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-slate-300 bg-muted/20 px-6 py-10 text-center text-muted-foreground dark:border-slate-700/70">
       <h3 className="text-sm font-medium text-foreground">Select a session to view its progress</h3>
-      <p className="max-w-sm text-sm">Pick any session from the sidebar or start a new one using the intake form below.</p>
+      <p className="max-w-sm text-sm">Pick any session from the sidebar or use the New button to draft a fresh learning topic.</p>
     </div>
   );
 }
@@ -657,7 +794,7 @@ function SessionTranscriptPanel({
   );
 
   return (
-    <div className="flex min-h-[420px] flex-col overflow-hidden rounded-md border border-slate-200 bg-background shadow-sm dark:border-slate-700">
+    <div className="flex min-h-[520px] flex-1 flex-col overflow-hidden rounded-md border border-slate-200 bg-background shadow-sm dark:border-slate-700 xl:min-h-[620px]">
       <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-700">
         <h3 className="text-base font-semibold text-foreground">Session transcript</h3>
         {isLoading && <span className="text-xs text-muted-foreground">Loading…</span>}
@@ -706,7 +843,7 @@ function TranscriptMessageList({ messages }: { messages: SessionTranscriptMessag
             <span className="font-medium text-foreground">{message.role === 'assistant' ? 'Vibecoursing' : 'You'}</span>
             <span>{formatTimestamp(message.createdAt)}</span>
           </div>
-          <p className="mt-2 whitespace-pre-line text-sm text-foreground">{message.body}</p>
+          <TranscriptMessageBody body={message.body} />
           {message.termsCovered.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
               {message.termsCovered.map((term) => (
@@ -724,6 +861,23 @@ function TranscriptMessageList({ messages }: { messages: SessionTranscriptMessag
         </li>
       ))}
     </ul>
+  );
+}
+
+function TranscriptMessageBody({ body }: { body: string }) {
+  if (!body || body.trim().length === 0) {
+    return null;
+  }
+
+  return (
+    <ReactMarkdown
+      className="mt-2 space-y-3 text-sm leading-6 text-foreground"
+      remarkPlugins={[remarkGfm]}
+      components={markdownComponents}
+      linkTarget="_blank"
+    >
+      {body}
+    </ReactMarkdown>
   );
 }
 
@@ -849,8 +1003,38 @@ function EmptyTranscriptState() {
   );
 }
 
-function SessionIntake({ onSessionCreated }: { onSessionCreated: (sessionId: Id<'learningSessions'>) => void }) {
+function SessionIntakeModal({
+  open,
+  onClose,
+  onSessionCreated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSessionCreated: (sessionId: Id<'learningSessions'>) => void;
+}) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-2xl">
+        <SessionIntake onSessionCreated={onSessionCreated} onClose={onClose} />
+      </div>
+    </div>
+  );
+}
+
+function SessionIntake({
+  onSessionCreated,
+  onClose,
+}: {
+  onSessionCreated: (sessionId: Id<'learningSessions'>) => void;
+  onClose?: () => void;
+}) {
   const generatePlan = useAction(api.mistral.generatePlan);
+  const startSessionIntroduction = useAction(api.mistral.startSessionIntroduction);
   const createLearningSession = useMutation(api.chat.createLearningSession);
 
   const [topic, setTopic] = useState('');
@@ -886,10 +1070,17 @@ function SessionIntake({ onSessionCreated }: { onSessionCreated: (sessionId: Id<
       const plan = normaliseGeneratedPlan(planResult.plan);
       const { sessionId } = await createLearningSession({ plan });
 
+      await startSessionIntroduction({ sessionId });
+
       setLastPlan(plan);
       setSuccessMessage(`Created a new session for "${plan.topic}".`);
       setTopic('');
+      setLearnerProfile('');
+      setTone('');
       onSessionCreated(sessionId);
+      if (onClose) {
+        onClose();
+      }
     } catch (err) {
       console.error('Session intake failed', err);
       setError(normaliseIntakeError(err));
@@ -899,12 +1090,52 @@ function SessionIntake({ onSessionCreated }: { onSessionCreated: (sessionId: Id<
   };
 
   return (
-    <div className="rounded-md border border-slate-200 bg-background p-6 shadow-sm dark:border-slate-700">
+    <div className="relative overflow-hidden rounded-md border border-slate-200 bg-background p-6 shadow-sm dark:border-slate-700">
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+        >
+          Close
+        </button>
+      )}
+      {isSubmitting && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-background/85 px-6 text-center backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4">
+            <span className="sr-only">Generating your learning session…</span>
+            <div
+              aria-hidden
+              className="h-12 w-12 animate-spin rounded-full border-2 border-foreground/20 border-t-foreground"
+            />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-foreground">Crafting your learning session…</p>
+              <p className="text-xs text-muted-foreground">
+                We are drafting your tailored plan, saving it, and preparing an introduction.
+              </p>
+            </div>
+          </div>
+          <ol className="w-full max-w-sm space-y-2 text-left text-xs text-muted-foreground">
+            <li className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.15)]" />
+              <span>Generating phases and learning objectives</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_0_4px_rgba(59,130,246,0.15)]" />
+              <span>Saving the session to your workspace</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-purple-500 shadow-[0_0_0_4px_rgba(168,85,247,0.15)]" />
+              <span>Preparing the assistant’s introduction</span>
+            </li>
+          </ol>
+        </div>
+      )}
       <h3 className="text-base font-semibold text-foreground">Start a new learning session</h3>
       <p className="mt-1 text-sm text-muted-foreground">
         Share a topic (and optional learner context). Vibecoursing will draft phases and key terms, then store the plan in Convex.
       </p>
-      <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
+      <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4" aria-busy={isSubmitting} aria-live="polite">
         <div className="flex flex-col gap-2">
           <label htmlFor="session-topic" className="text-sm font-medium text-foreground">
             Topic

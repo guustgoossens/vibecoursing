@@ -73,6 +73,8 @@ produce up to three short follow-up prompt suggestions. Respond with JSON in the
 const RECAP_SYSTEM_PROMPT = `You are a concise learning companion. Summarize the learner's progress in under 120 words, reinforcing completed goals
 and highlighting one suggestion for next time.`;
 
+const SESSION_INTRO_SYSTEM_PROMPT = `You are Vibecoursing, a warm and proactive learning companion. Welcome the learner to their new topic, summarise what the plan covers, and recommend where to begin. Keep the response under 160 words and finish with an open question inviting them to dive in. Avoid markdown headings.`;
+
 function cleanString(value?: string | null) {
   if (value === undefined || value === null) {
     return undefined;
@@ -133,6 +135,56 @@ function normaliseFollowUpSuggestions(payload: unknown): FollowUpSuggestion[] {
   }
 
   return suggestions;
+}
+
+async function generateFollowUpSuggestions(
+  ctx: ActionCtx,
+  transcript: ChatMessage[],
+  remainingTerms: string[]
+): Promise<FollowUpSuggestion[]> {
+  try {
+    const { content } = await callMistral({
+      ctx,
+      messages: [
+        {
+          role: 'user',
+          content: `Recent transcript:\n${JSON.stringify(transcript)}\nRemaining key terms to cover: ${remainingTerms.join(', ') || 'none'}.`,
+        },
+      ],
+      temperature: 0.5,
+      maxTokens: 400,
+      systemPrompt: FOLLOW_UP_SYSTEM_PROMPT,
+    });
+
+    const jsonPayload = extractJsonPayload(content);
+    const parsed = JSON.parse(jsonPayload);
+    return normaliseFollowUpSuggestions(parsed);
+  } catch (error) {
+    console.error('Follow-up suggestion generation failed', { error, remainingTerms });
+    return [];
+  }
+}
+
+async function refreshFollowUpSuggestions(params: {
+  ctx: ActionCtx;
+  sessionId: Id<'learningSessions'>;
+  transcriptWithAssistant: ChatMessage[];
+  phaseProgress: PhaseProgress[];
+  assistantMessage: { id: Id<'sessionMessages'>; createdAt: number };
+}): Promise<void> {
+  const { ctx, sessionId, transcriptWithAssistant, phaseProgress, assistantMessage } = params;
+  const remainingTerms = phaseProgress.flatMap((phase) => phase.remainingTerms);
+  const suggestions = await generateFollowUpSuggestions(ctx, transcriptWithAssistant, remainingTerms);
+
+  await ctx.runMutation(internal.mistral.replaceSessionFollowUps, {
+    sessionId,
+    generatedForMessageId: assistantMessage.id,
+    suggestions: suggestions.map((suggestion) => ({
+      prompt: suggestion.prompt,
+      rationale: suggestion.rationale ?? undefined,
+    })),
+    createdAt: assistantMessage.createdAt,
+  });
 }
 
 function detectCoveredTerms(body: string, terms: Doc<'sessionTerms'>[]): Doc<'sessionTerms'>[] {
@@ -769,42 +821,15 @@ export const runSessionTurn = action({
     })) as RecordedAssistantTurn;
 
     const followUpTranscript: ChatMessage[] = [...transcriptMessages, { role: 'assistant', content: assistantBody }];
-    const remainingTerms = turnResult.phaseProgress.flatMap((phase) => phase.remainingTerms);
-
-    let followUpSuggestions: FollowUpSuggestion[] = [];
-    try {
-      const { content: followUpContent } = await callMistral({
-        ctx,
-        messages: [
-          {
-            role: 'user',
-            content: `Recent transcript:\n${JSON.stringify(followUpTranscript)}\nRemaining key terms to cover: ${remainingTerms.join(', ') || 'none'}.`,
-          },
-        ],
-        temperature: 0.5,
-        maxTokens: 400,
-        systemPrompt: FOLLOW_UP_SYSTEM_PROMPT,
-      });
-
-      const followUpJson = extractJsonPayload(followUpContent);
-      const parsedFollowUps = JSON.parse(followUpJson);
-      followUpSuggestions = normaliseFollowUpSuggestions(parsedFollowUps);
-    } catch (error) {
-      console.error('Follow-up suggestion generation failed', {
-        error,
-        sessionId: args.sessionId,
-      });
-      followUpSuggestions = [];
-    }
-
-    await ctx.runMutation(internal.mistral.replaceSessionFollowUps, {
+    await refreshFollowUpSuggestions({
+      ctx,
       sessionId: args.sessionId,
-      generatedForMessageId: turnResult.assistantMessage.id,
-      suggestions: followUpSuggestions.map((suggestion) => ({
-        prompt: suggestion.prompt,
-        rationale: suggestion.rationale ?? undefined,
-      })),
-      createdAt: turnResult.assistantMessage.createdAt,
+      transcriptWithAssistant: followUpTranscript,
+      phaseProgress: turnResult.phaseProgress,
+      assistantMessage: {
+        id: turnResult.assistantMessage.id,
+        createdAt: turnResult.assistantMessage.createdAt,
+      },
     });
 
     return {
@@ -812,6 +837,87 @@ export const runSessionTurn = action({
       userMessage: userMessageResult.message,
       assistantMessage: turnResult.assistantMessage,
       newlyCoveredTerms: turnResult.newlyCoveredTerms,
+      phaseProgress: turnResult.phaseProgress,
+    };
+  },
+});
+
+export const startSessionIntroduction = action({
+  args: {
+    sessionId: v.id('learningSessions'),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError('NOT_AUTHENTICATED');
+    }
+
+    const user = (await ctx.runQuery(internal.mistral.getUserByExternalId, {
+      externalId: identity.subject,
+    })) as Doc<'users'> | null;
+    if (!user) {
+      throw new ConvexError('USER_PROFILE_MISSING');
+    }
+
+    const sessionContext = (await ctx.runQuery(internal.mistral.getSessionContextForTurn, {
+      sessionId: args.sessionId,
+      userId: user._id,
+    })) as SessionContextForTurn;
+
+    if (sessionContext.transcript.length > 0) {
+      return { alreadyInitialized: true };
+    }
+
+    const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
+    for (const term of sessionContext.terms) {
+      termState.set(term._id, term);
+    }
+
+    const phaseProgressBefore = buildPhaseProgress(sessionContext.phases, termState);
+    const planContext = buildPlanContext(sessionContext.session, phaseProgressBefore);
+
+    const introMessage: ChatMessage = {
+      role: 'user',
+      content: `Learning plan context:\n${JSON.stringify(planContext)}\nDraft a friendly welcome that previews the phases, highlights the first suggested action, and invites the learner to respond.`,
+    };
+
+    const { content, usage } = await callMistral({
+      ctx,
+      messages: [introMessage],
+      temperature: 0.45,
+      maxTokens: 420,
+      systemPrompt: SESSION_INTRO_SYSTEM_PROMPT,
+    });
+
+    const assistantBody = content.trim();
+
+    const turnResult = (await ctx.runMutation(internal.mistral.recordAssistantTurn, {
+      sessionId: args.sessionId,
+      assistantBody,
+      usage: usage ?? undefined,
+    })) as RecordedAssistantTurn;
+
+    const transcriptMessages: ChatMessage[] = sessionContext.transcript.map((message) => ({
+      role: message.role,
+      content: message.body,
+    }));
+    const transcriptWithAssistant: ChatMessage[] = [...transcriptMessages, { role: 'assistant', content: assistantBody }];
+
+    await refreshFollowUpSuggestions({
+      ctx,
+      sessionId: args.sessionId,
+      transcriptWithAssistant,
+      phaseProgress: turnResult.phaseProgress,
+      assistantMessage: {
+        id: turnResult.assistantMessage.id,
+        createdAt: turnResult.assistantMessage.createdAt,
+      },
+    });
+
+    return {
+      alreadyInitialized: false,
+      session: turnResult.session,
+      assistantMessage: turnResult.assistantMessage,
       phaseProgress: turnResult.phaseProgress,
     };
   },
