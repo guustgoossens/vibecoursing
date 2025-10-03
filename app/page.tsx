@@ -1209,9 +1209,7 @@ function FollowUpSuggestions({
               title={followUp.rationale ?? undefined}
               aria-label={ariaLabel}
             >
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={followUpMarkdownComponents}
+              <span
                 className={`text-xs font-semibold leading-snug ${
                   isSelected ? 'text-primary-foreground' : 'text-foreground'
                 }`}
