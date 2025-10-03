@@ -60,7 +60,8 @@ Given a topic and optional learner context, respond with a concise JSON object t
 Ensure the JSON is valid and contains 2-4 phases with at least three key terms each.`;
 
 const FOLLOW_UP_SYSTEM_PROMPT = `You are a Socratic teaching assistant. Based on the recent conversation and the remaining key terms,
-produce up to three short follow-up prompt suggestions. Respond with JSON in the format:
+produce exactly three short follow-up question suggestions. Each prompt must be phrased as a question, stay under 120 characters,
+and include a one sentence rationale explaining why it helps the learner progress. Respond with JSON in the format:
 {
   "prompts": [
     {
@@ -68,7 +69,8 @@ produce up to three short follow-up prompt suggestions. Respond with JSON in the
       "rationale": string
     }
   ]
-}`;
+}
+Only include the JSON payload.`;
 
 const RECAP_SYSTEM_PROMPT = `You are a concise learning companion. Summarize the learner's progress in under 120 words, reinforcing completed goals
 and highlighting one suggestion for next time.`;
@@ -81,6 +83,15 @@ function cleanString(value?: string | null) {
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function normaliseFollowUpPrompt(value?: string | null) {
+  const cleaned = cleanString(value);
+  if (!cleaned) {
+    return undefined;
+  }
+  const collapsed = cleaned.replace(/\s+/g, ' ');
+  return collapsed.endsWith('?') ? collapsed : `${collapsed}?`;
 }
 
 function extractJsonPayload(raw: string): string {
@@ -119,22 +130,107 @@ function normaliseFollowUpSuggestions(payload: unknown): FollowUpSuggestion[] {
     : [];
 
   const suggestions: FollowUpSuggestion[] = [];
+  const seen = new Set<string>();
   for (const entry of rawPrompts) {
     if (!entry || typeof entry !== 'object') {
       continue;
     }
-    const prompt = cleanString((entry as { prompt?: unknown }).prompt as string | undefined);
+    const prompt = normaliseFollowUpPrompt((entry as { prompt?: unknown }).prompt as string | undefined);
     if (!prompt) {
+      continue;
+    }
+    const signature = prompt.toLowerCase();
+    if (seen.has(signature)) {
       continue;
     }
     const rationale = cleanString((entry as { rationale?: unknown }).rationale as string | undefined) ?? null;
     suggestions.push({ prompt, rationale });
+    seen.add(signature);
     if (suggestions.length === 3) {
       break;
     }
   }
 
   return suggestions;
+}
+
+function ensureFollowUpCount(params: {
+  suggestions: FollowUpSuggestion[];
+  remainingTerms: string[];
+  targetCount: number;
+}): FollowUpSuggestion[] {
+  const { suggestions, remainingTerms, targetCount } = params;
+  if (suggestions.length >= targetCount) {
+    return suggestions.slice(0, targetCount);
+  }
+
+  const result: FollowUpSuggestion[] = [...suggestions];
+  const seen = new Set(result.map((item) => item.prompt.toLowerCase()));
+
+  const uniqueRemainingTerms: string[] = [];
+  const seenTerms = new Set<string>();
+  for (const term of remainingTerms) {
+    const cleaned = cleanString(term);
+    if (!cleaned) {
+      continue;
+    }
+    const signature = cleaned.toLowerCase();
+    if (seenTerms.has(signature)) {
+      continue;
+    }
+    seenTerms.add(signature);
+    uniqueRemainingTerms.push(cleaned);
+  }
+
+  for (const term of uniqueRemainingTerms) {
+    if (result.length >= targetCount) {
+      break;
+    }
+    const prompt = normaliseFollowUpPrompt(`Can we explore "${term}" next`);
+    if (!prompt) {
+      continue;
+    }
+    const signature = prompt.toLowerCase();
+    if (seen.has(signature)) {
+      continue;
+    }
+    result.push({
+      prompt,
+      rationale: `Reinforces the remaining key term "${term}".`,
+    });
+    seen.add(signature);
+  }
+
+  if (result.length < targetCount) {
+    const genericFallbacks = [
+      {
+        prompt: 'What should I practise next to keep making progress',
+        rationale: 'Keeps the learner focused when no specific key terms remain.',
+      },
+      {
+        prompt: 'Could you suggest an example so I can apply this now',
+        rationale: 'Encourages immediate application of the latest concept.',
+      },
+    ];
+
+    for (const fallback of genericFallbacks) {
+      if (result.length >= targetCount) {
+        break;
+      }
+      const prompt = normaliseFollowUpPrompt(fallback.prompt);
+      if (!prompt) {
+        continue;
+      }
+      const signature = prompt.toLowerCase();
+      if (seen.has(signature)) {
+        continue;
+      }
+      result.push({ prompt, rationale: fallback.rationale });
+      seen.add(signature);
+    }
+  }
+
+  return result.slice(0, targetCount);
 }
 
 async function generateFollowUpSuggestions(
@@ -175,11 +271,16 @@ async function refreshFollowUpSuggestions(params: {
   const { ctx, sessionId, transcriptWithAssistant, phaseProgress, assistantMessage } = params;
   const remainingTerms = phaseProgress.flatMap((phase) => phase.remainingTerms);
   const suggestions = await generateFollowUpSuggestions(ctx, transcriptWithAssistant, remainingTerms);
+  const completedSuggestions = ensureFollowUpCount({
+    suggestions,
+    remainingTerms,
+    targetCount: 3,
+  });
 
   await ctx.runMutation(internal.mistral.replaceSessionFollowUps, {
     sessionId,
     generatedForMessageId: assistantMessage.id,
-    suggestions: suggestions.map((suggestion) => ({
+    suggestions: completedSuggestions.map((suggestion) => ({
       prompt: suggestion.prompt,
       rationale: suggestion.rationale ?? undefined,
     })),
@@ -712,6 +813,77 @@ export const generateFollowUps = action({
     const suggestions = normaliseFollowUpSuggestions(parsed);
 
     return { prompts: suggestions, suggestions, usage, raw };
+  },
+});
+
+export const refreshSessionFollowUps = action({
+  args: {
+    sessionId: v.id('learningSessions'),
+    assistantMessageId: v.optional(v.id('sessionMessages')),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError('NOT_AUTHENTICATED');
+    }
+
+    const user = (await ctx.runQuery(internal.mistral.getUserByExternalId, {
+      externalId: identity.subject,
+    })) as Doc<'users'> | null;
+    if (!user) {
+      throw new ConvexError('USER_PROFILE_MISSING');
+    }
+
+    const sessionContext = (await ctx.runQuery(internal.mistral.getSessionContextForTurn, {
+      sessionId: args.sessionId,
+      userId: user._id,
+    })) as SessionContextForTurn;
+
+    if (sessionContext.transcript.length === 0) {
+      return { refreshed: false, reason: 'NO_MESSAGES' } as const;
+    }
+
+    let targetIndex = -1;
+    if (args.assistantMessageId) {
+      targetIndex = sessionContext.transcript.findIndex(
+        (message) => message._id === args.assistantMessageId && message.role === 'assistant'
+      );
+    }
+
+    if (targetIndex === -1) {
+      for (let index = sessionContext.transcript.length - 1; index >= 0; index -= 1) {
+        const candidate = sessionContext.transcript[index];
+        if (candidate.role === 'assistant') {
+          targetIndex = index;
+          break;
+        }
+      }
+    }
+
+    if (targetIndex === -1) {
+      return { refreshed: false, reason: 'NO_ASSISTANT_MESSAGE' } as const;
+    }
+
+    const assistantMessage = sessionContext.transcript[targetIndex];
+    const transcriptWithAssistant: ChatMessage[] = sessionContext.transcript
+      .slice(0, targetIndex + 1)
+      .map((message) => ({ role: message.role, content: message.body }));
+
+    const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
+    for (const term of sessionContext.terms) {
+      termState.set(term._id, term);
+    }
+    const phaseProgress = buildPhaseProgress(sessionContext.phases, termState);
+
+    await refreshFollowUpSuggestions({
+      ctx,
+      sessionId: args.sessionId,
+      transcriptWithAssistant,
+      phaseProgress,
+      assistantMessage: { id: assistantMessage._id, createdAt: assistantMessage.createdAt },
+    });
+
+    return { refreshed: true } as const;
   },
 });
 

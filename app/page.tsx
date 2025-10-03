@@ -1123,30 +1123,56 @@ function FollowUpSuggestions({
   disabled: boolean;
 }) {
   if (followUps.length === 0) {
-    return <p className="text-xs text-muted-foreground">Follow-up prompts will appear here once the assistant suggests them.</p>;
+    return (
+      <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+        Follow-up questions will appear here once the assistant suggests them.
+      </p>
+    );
   }
 
   return (
-    <div className="flex flex-wrap gap-2">
-      {followUps.map((followUp) => {
-        const isSelected = followUp.id === selectedId;
-        return (
-          <button
-            key={followUp.id}
-            type="button"
-            className={`rounded-full border px-3 py-1 text-xs transition ${
-              isSelected
-                ? 'border-primary bg-primary text-background shadow-sm'
-                : 'border-border bg-background text-muted-foreground hover:border-primary hover:text-primary'
-            }`}
-            onClick={() => onSelect(followUp)}
-            disabled={disabled}
-            title={followUp.rationale ?? undefined}
-          >
-            {followUp.prompt}
-          </button>
-        );
-      })}
+    <div className="space-y-2">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        Suggested follow-up questions
+      </span>
+      <div className="flex flex-wrap gap-2">
+        {followUps.map((followUp) => {
+          const isSelected = followUp.id === selectedId;
+          const ariaLabel = followUp.rationale ? `${followUp.prompt}. ${followUp.rationale}` : followUp.prompt;
+          return (
+            <button
+              key={followUp.id}
+              type="button"
+              className={`flex max-w-[260px] flex-col gap-1 rounded-lg border px-3 py-2 text-left text-xs transition ${
+                isSelected
+                  ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                  : 'border-border bg-background text-foreground hover:border-primary hover:text-primary'
+              } disabled:cursor-not-allowed disabled:opacity-60`}
+              onClick={() => onSelect(followUp)}
+              disabled={disabled}
+              title={followUp.rationale ?? undefined}
+              aria-label={ariaLabel}
+            >
+              <span
+                className={`text-xs font-semibold leading-snug ${
+                  isSelected ? 'text-primary-foreground' : 'text-foreground'
+                }`}
+              >
+                {followUp.prompt}
+              </span>
+              {followUp.rationale ? (
+                <span
+                  className={`text-[10px] leading-snug ${
+                    isSelected ? 'text-primary-foreground/90' : 'text-muted-foreground'
+                  }`}
+                >
+                  {followUp.rationale}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
