@@ -111,43 +111,58 @@ class PlanValidationError extends Error {
 
 const MAX_PROMPT_LENGTH = 2000;
 
+const omitClassName = <T extends { className?: string }>(props: T) => {
+  const { className, ...rest } = props;
+  void className;
+  return rest;
+};
+
 const markdownComponents: ReactMarkdownComponents = {
   p: ({ children, ...props }) => (
     <p
-      {...props}
+      {...omitClassName(props)}
       className="text-sm leading-6 text-foreground [&:not(:first-child)]:mt-3"
     >
       {children}
     </p>
   ),
   strong: ({ children, ...props }) => (
-    <strong {...props} className="font-semibold text-foreground">
+    <strong {...omitClassName(props)} className="font-semibold text-foreground">
       {children}
     </strong>
   ),
   em: ({ children, ...props }) => (
-    <em {...props} className="italic text-foreground">
+    <em {...omitClassName(props)} className="italic text-foreground">
       {children}
     </em>
   ),
   ul: ({ children, ...props }) => (
-    <ul {...props} className="ml-5 list-disc space-y-1 text-sm leading-6 text-foreground">
+    <ul
+      {...omitClassName(props)}
+      className="ml-5 list-disc space-y-1 text-sm leading-6 text-foreground"
+    >
       {children}
     </ul>
   ),
   ol: ({ children, ...props }) => (
-    <ol {...props} className="ml-5 list-decimal space-y-1 text-sm leading-6 text-foreground">
+    <ol
+      {...omitClassName(props)}
+      className="ml-5 list-decimal space-y-1 text-sm leading-6 text-foreground"
+    >
       {children}
     </ol>
   ),
   li: ({ children, ...props }) => (
-    <li {...props} className="text-sm leading-6 text-foreground marker:text-muted-foreground">
+    <li
+      {...omitClassName(props)}
+      className="text-sm leading-6 text-foreground marker:text-muted-foreground"
+    >
       {children}
     </li>
   ),
   blockquote: ({ children, ...props }) => (
     <blockquote
-      {...props}
+      {...omitClassName(props)}
       className="border-l-2 border-slate-300 pl-3 text-sm italic text-muted-foreground dark:border-slate-700"
     >
       {children}
@@ -155,7 +170,7 @@ const markdownComponents: ReactMarkdownComponents = {
   ),
   a: ({ children, href, ...props }) => (
     <a
-      {...props}
+      {...omitClassName(props)}
       href={href}
       target="_blank"
       rel="noreferrer"
@@ -164,7 +179,9 @@ const markdownComponents: ReactMarkdownComponents = {
       {children}
     </a>
   ),
-  hr: (props) => <hr {...props} className="my-4 border-slate-200 dark:border-slate-700" />,
+  hr: (props) => (
+    <hr {...omitClassName(props)} className="my-4 border-slate-200 dark:border-slate-700" />
+  ),
   code: ({ inline, className, children, ...props }: MarkdownCodeProps) => {
     if (inline) {
       return (
@@ -188,7 +205,7 @@ const markdownComponents: ReactMarkdownComponents = {
   table: ({ children, ...props }) => (
     <div className="mt-3 overflow-x-auto">
       <table
-        {...props}
+        {...omitClassName(props)}
         className="w-full table-auto text-left text-sm text-foreground"
       >
         {children}
@@ -196,14 +213,53 @@ const markdownComponents: ReactMarkdownComponents = {
     </div>
   ),
   th: ({ children, ...props }) => (
-    <th {...props} className="border-b border-slate-200 px-3 py-2 text-left font-semibold dark:border-slate-700">
+    <th
+      {...omitClassName(props)}
+      className="border-b border-slate-200 px-3 py-2 text-left font-semibold dark:border-slate-700"
+    >
       {children}
     </th>
   ),
   td: ({ children, ...props }) => (
-    <td {...props} className="border-b border-slate-200 px-3 py-2 align-top dark:border-slate-700">
+    <td
+      {...omitClassName(props)}
+      className="border-b border-slate-200 px-3 py-2 align-top dark:border-slate-700"
+    >
       {children}
     </td>
+  ),
+};
+
+const followUpMarkdownComponents: ReactMarkdownComponents = {
+  p: ({ children, ...props }) => (
+    <span {...omitClassName(props)} className="inline text-xs font-semibold leading-snug">
+      {children}
+    </span>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong {...omitClassName(props)} className="font-semibold">
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em {...omitClassName(props)} className="italic">
+      {children}
+    </em>
+  ),
+  code: ({ children, ...props }) => (
+    <code {...omitClassName(props)} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
+      {children}
+    </code>
+  ),
+  ul: ({ children, ...props }) => (
+    <span {...omitClassName(props)} className="inline">
+      {children}
+    </span>
+  ),
+  ol: ({ children, ...props }) => (
+    <span {...omitClassName(props)} className="inline">
+      {children}
+    </span>
   ),
 };
 
@@ -503,14 +559,14 @@ function SessionExperience({
 }) {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
-      <div className="flex-1 overflow-hidden px-8 py-8">
+      <div className="flex-1 overflow-hidden px-4 py-5 sm:px-5 sm:py-6">
         <SessionTranscriptPanel
           session={session}
           transcript={transcript}
           onStartNewSession={onStartNewSession}
         />
       </div>
-      <div className="border-t border-border bg-card px-6 py-6 xl:hidden">
+      <div className="border-t border-border bg-card px-4 py-5 xl:hidden">
         <CourseDashboardContent
           session={session}
           phaseProgress={transcript?.phaseProgress}
@@ -996,7 +1052,7 @@ function SessionTranscriptPanel({
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border px-6 py-5">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border px-5 py-4">
         <div className="space-y-1">
           <span className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             Session transcript
@@ -1019,7 +1075,7 @@ function SessionTranscriptPanel({
           </button>
         </div>
       </div>
-      <div ref={messageContainerRef} className="flex-1 overflow-y-auto bg-background px-6 py-6">
+      <div ref={messageContainerRef} className="flex-1 overflow-y-auto bg-background px-4 py-4">
         {isLoading ? (
           <TranscriptSkeleton />
         ) : messages.length === 0 ? (
@@ -1028,7 +1084,7 @@ function SessionTranscriptPanel({
           <TranscriptMessageList messages={messages} />
         )}
       </div>
-      <div className="space-y-4 border-t border-border bg-card px-6 py-5">
+      <div className="space-y-3 border-t border-border bg-card px-4 py-4">
         <FollowUpSuggestions
           followUps={followUps}
           onSelect={handleSelectFollowUp}
@@ -1135,7 +1191,7 @@ function FollowUpSuggestions({
       <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
         Suggested follow-up questions
       </span>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
         {followUps.map((followUp) => {
           const isSelected = followUp.id === selectedId;
           const ariaLabel = followUp.rationale ? `${followUp.prompt}. ${followUp.rationale}` : followUp.prompt;
@@ -1143,11 +1199,11 @@ function FollowUpSuggestions({
             <button
               key={followUp.id}
               type="button"
-              className={`flex max-w-[260px] flex-col gap-1 rounded-lg border px-3 py-2 text-left text-xs transition ${
+              className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1 text-left transition ${
                 isSelected
                   ? 'border-primary bg-primary text-primary-foreground shadow-sm'
                   : 'border-border bg-background text-foreground hover:border-primary hover:text-primary'
-              } disabled:cursor-not-allowed disabled:opacity-60`}
+              } whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-60`}
               onClick={() => onSelect(followUp)}
               disabled={disabled}
               title={followUp.rationale ?? undefined}
@@ -1158,17 +1214,10 @@ function FollowUpSuggestions({
                   isSelected ? 'text-primary-foreground' : 'text-foreground'
                 }`}
               >
-                {followUp.prompt}
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={followUpMarkdownComponents}>
+                  {followUp.prompt}
+                </ReactMarkdown>
               </span>
-              {followUp.rationale ? (
-                <span
-                  className={`text-[10px] leading-snug ${
-                    isSelected ? 'text-primary-foreground/90' : 'text-muted-foreground'
-                  }`}
-                >
-                  {followUp.rationale}
-                </span>
-              ) : null}
             </button>
           );
         })}
