@@ -2,12 +2,11 @@
 
 import { Authenticated, Unauthenticated, useAction, useMutation, useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
-import { ChatLayout } from '@/components/chat/ChatLayout';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ComponentPropsWithoutRef } from 'react';
+import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import type { Components as ReactMarkdownComponents, ExtraProps } from 'react-markdown';
 import type { Id } from '@/convex/_generated/dataModel';
 
@@ -289,6 +288,7 @@ function Content() {
 
   const viewer = bootstrap?.viewer ?? null;
   const activeSession = activeSessionId && sessions ? sessions.find((session) => session.id === activeSessionId) ?? null : null;
+  const hasSessions = sessions?.length ? sessions.length > 0 : false;
 
   const handleSelectSession = useCallback((sessionId: Id<'learningSessions'>) => {
     setActiveSessionId((current) => (current === sessionId ? current : sessionId));
@@ -309,60 +309,59 @@ function Content() {
 
   if (bootstrap === undefined || sessions === undefined) {
     return (
-      <ChatLayout
-        header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
+      <WorkspaceShell
         sidebar={<SessionSidebarSkeleton />}
         main={<SessionMainSkeleton />}
+        course={<CourseDashboardSkeleton user={user} onSignOut={signOut} />}
+      />
+    );
+  }
+
+  const sidebarContent = (
+    <SessionSidebar
+      sessions={sessions}
+      activeSessionId={activeSessionId}
+      onSelectSession={handleSelectSession}
+      onStartNewSession={openIntake}
+    />
+  );
+
+  let mainContent: ReactNode;
+  let courseContent: ReactNode;
+
+  if (!hasSessions) {
+    mainContent = <NoSessionsView viewer={viewer} onSessionCreated={handleSessionCreated} />;
+    courseContent = <CourseDashboardEmpty user={user} onSignOut={signOut} />;
+  } else if (!activeSession) {
+    mainContent = <MissingSelectionView onStartNewSession={openIntake} />;
+    courseContent = <CourseDashboardPlaceholder user={user} onSignOut={signOut} />;
+  } else {
+    mainContent = (
+      <SessionExperience
+        session={activeSession}
+        transcript={transcript}
+        onStartNewSession={openIntake}
+      />
+    );
+    courseContent = (
+      <CourseDashboardPanel
+        user={user}
+        onSignOut={signOut}
+        session={activeSession}
+        transcript={transcript}
       />
     );
   }
 
   return (
     <>
-      <ChatLayout
-        header={<WorkspaceTopBar user={user} onSignOut={signOut} />}
-        sidebar={
-          <SessionSidebar
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={handleSelectSession}
-            onStartNewSession={openIntake}
-          />
-        }
-        main={
-          <SessionLanding
-            viewer={viewer}
-            session={activeSession}
-            hasSessions={sessions.length > 0}
-            onSessionCreated={handleSessionCreated}
-            transcript={transcript}
-            onStartNewSession={openIntake}
-          />
-        }
-      />
+      <WorkspaceShell sidebar={sidebarContent} main={mainContent} course={courseContent} />
       <SessionIntakeModal
         open={isIntakeOpen}
         onClose={closeIntake}
         onSessionCreated={handleSessionCreated}
       />
     </>
-  );
-}
-
-function WorkspaceTopBar({ user, onSignOut }: { user: AuthLikeUser | null | undefined; onSignOut: () => void }) {
-  return (
-    <div className="flex h-14 items-center justify-between px-6">
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-md bg-foreground text-lg font-semibold text-background">
-          VC
-        </div>
-        <div className="flex flex-col">
-          <span className="text-sm font-semibold leading-none">Vibecoursing</span>
-          <span className="text-xs text-muted-foreground">Learning companion MVP</span>
-        </div>
-      </div>
-      {user && <UserMenu user={user} onSignOut={onSignOut} />}
-    </div>
   );
 }
 
@@ -378,25 +377,28 @@ function SessionSidebar({
   onStartNewSession: () => void;
 }) {
   return (
-    <>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sessions</h2>
-          <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">{sessions.length}</span>
-        </div>
+    <div className="flex h-full flex-col text-sidebar-foreground">
+      <div className="mb-8">
+        <h1 className="text-2xl font-semibold tracking-tight">Vibecoursing</h1>
+        <p className="mt-1 text-xs text-muted-foreground">Learning companion</p>
+      </div>
+      <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+        <span>Sessions</span>
         <button
           type="button"
-          className="rounded-md border border-slate-300 bg-background px-2.5 py-1 text-xs font-medium text-foreground shadow-sm transition hover:border-foreground hover:text-foreground dark:border-slate-700"
           onClick={onStartNewSession}
+          className="rounded-md border border-sidebar bg-sidebar-accent px-3 py-1 text-[11px] font-medium text-sidebar-foreground shadow-sm transition hover:border-sidebar-ring hover:bg-sidebar-accent/80"
         >
           New
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto">
+      <nav className="mt-4 flex-1 overflow-y-auto pr-1">
         {sessions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No sessions yet—use the New button above to draft your first topic.</p>
+          <div className="rounded-lg border border-dashed border-sidebar bg-sidebar/60 px-3 py-4 text-sm text-muted-foreground">
+            No sessions yet—start with a new topic to draft your first plan.
+          </div>
         ) : (
-          <ul className="flex flex-col gap-2 text-sm">
+          <ul className="flex flex-col gap-3 text-sm">
             {sessions.map((session) => {
               const isActive = session.id === activeSessionId;
               const progress = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
@@ -404,19 +406,24 @@ function SessionSidebar({
                 <li key={session.id}>
                   <button
                     type="button"
-                    className={`w-full rounded-md border px-3 py-2 text-left transition ${
-                      isActive
-                        ? 'border-slate-300 bg-background text-foreground shadow-sm dark:border-slate-700'
-                        : 'border-transparent bg-background/40 text-muted-foreground hover:border-slate-300 hover:bg-background hover:text-foreground dark:hover:border-slate-700'
-                    }`}
-                    aria-current={isActive ? 'page' : undefined}
                     onClick={() => onSelectSession(session.id)}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`group w-full rounded-xl border px-4 py-3 text-left shadow-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring ${
+                      isActive
+                        ? 'border-sidebar-ring bg-sidebar-accent'
+                        : 'border-transparent bg-card hover:border-sidebar-ring/40 hover:bg-sidebar-accent/70'
+                    }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium">{session.topic}</span>
-                      <span className="text-[10px] uppercase text-muted-foreground">{progress}%</span>
+                    <div className="flex items-start justify-between gap-3">
+                      <span className={`font-medium leading-snug ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}>
+                        {session.topic}
+                      </span>
+                      <span className="text-[10px] font-semibold uppercase text-muted-foreground">{progress}%</span>
                     </div>
-                    <p className="text-xs text-muted-foreground">
+                    <div className="mt-2">
+                      <ProgressBar percent={progress} className="h-1.5" />
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
                       Updated {new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                     </p>
                   </button>
@@ -426,74 +433,89 @@ function SessionSidebar({
           </ul>
         )}
       </nav>
-      <p className="text-xs text-muted-foreground">
-        Learning sessions capture your topic plan, transcripts, and progress across key terms.
-      </p>
-    </>
+      <div className="mt-6 rounded-lg border border-dashed border-sidebar px-3 py-3 text-xs text-muted-foreground">
+        Learning sessions capture your transcript, phases, and tracked terms.
+      </div>
+    </div>
   );
 }
 
 function SessionSidebarSkeleton() {
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="h-4 w-28 rounded bg-slate-300/50 dark:bg-slate-700/60" />
+      <div className="h-6 w-40 rounded bg-muted/60" />
+      <div className="h-4 w-20 rounded bg-muted/60" />
       <div className="flex flex-col gap-3">
-        <div className="h-12 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-12 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-12 w-full rounded bg-slate-300/30 dark:bg-slate-700/40" />
+        <div className="h-20 w-full rounded-xl bg-muted/50" />
+        <div className="h-20 w-full rounded-xl bg-muted/50" />
+        <div className="h-20 w-full rounded-xl bg-muted/50" />
       </div>
-      <div className="h-10 w-3/4 rounded bg-slate-300/30 dark:bg-slate-700/40" />
+      <div className="mt-auto h-16 w-full rounded-lg border border-dashed border-muted" />
     </div>
   );
 }
 
-function SessionLanding({
+function NoSessionsView({
   viewer,
-  session,
-  hasSessions,
   onSessionCreated,
-  transcript,
-  onStartNewSession,
 }: {
   viewer: ViewerSummary;
-  session: SessionSummary | null;
-  hasSessions: boolean;
   onSessionCreated: (sessionId: Id<'learningSessions'>) => void;
-  transcript: SessionTranscriptData | undefined;
-  onStartNewSession: () => void;
 }) {
-  if (!hasSessions) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
+  return (
+    <div className="flex h-full flex-col overflow-y-auto bg-background">
+      <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-8 py-10">
         <EmptySessionState viewer={viewer} />
         <SessionIntake onSessionCreated={onSessionCreated} />
       </div>
-    );
-  }
+    </div>
+  );
+}
 
-  if (!session) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
+function MissingSelectionView({ onStartNewSession }: { onStartNewSession: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center bg-background px-8 py-10 text-center">
+      <div className="flex w-full max-w-3xl flex-col gap-6">
         <MissingSessionSelectionState />
-        <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-dashed border-slate-300 bg-muted/20 px-6 py-6 text-center text-muted-foreground dark:border-slate-700/70">
-          <p className="text-sm">Select a session in the sidebar or start a new one to begin learning.</p>
+        <div className="rounded-xl border border-dashed border-border bg-card px-6 py-6 text-sm text-muted-foreground">
+          <p>Select a session in the sidebar or start a new one to begin learning.</p>
           <button
             type="button"
             onClick={onStartNewSession}
-            className="rounded-md border border-slate-300 bg-background px-4 py-2 text-sm font-medium text-foreground shadow-sm transition hover:border-foreground hover:text-foreground dark:border-slate-700"
+            className="mt-4 inline-flex items-center justify-center rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground shadow-sm transition hover:border-primary hover:text-primary"
           >
             Start a new session
           </button>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
+function SessionExperience({
+  session,
+  transcript,
+  onStartNewSession,
+}: {
+  session: SessionSummary;
+  transcript: SessionTranscriptData | undefined;
+  onStartNewSession: () => void;
+}) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)] xl:items-start">
-        <SessionTranscriptPanel sessionId={session.id} transcript={transcript} />
-        <SessionOverviewCard session={session} phaseProgress={transcript?.phaseProgress} />
+    <div className="flex h-full flex-col overflow-hidden bg-background">
+      <div className="flex-1 overflow-hidden px-8 py-8">
+        <SessionTranscriptPanel
+          session={session}
+          transcript={transcript}
+          onStartNewSession={onStartNewSession}
+        />
+      </div>
+      <div className="border-t border-border bg-card px-6 py-6 xl:hidden">
+        <CourseDashboardContent
+          session={session}
+          phaseProgress={transcript?.phaseProgress}
+          variant="compact"
+        />
       </div>
     </div>
   );
@@ -501,10 +523,10 @@ function SessionLanding({
 
 function EmptySessionState({ viewer }: { viewer: ViewerSummary }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-slate-300 bg-muted/20 px-6 py-10 text-center dark:border-slate-700/70">
-      <h2 className="text-lg font-semibold">Welcome{viewer?.name ? `, ${viewer.name}` : ''}!</h2>
-      <p className="max-w-sm text-sm text-muted-foreground">
-        Use the intake form below to draft your first guided learning session. Vibecoursing will turn a topic into a phased plan and track your progress.
+    <div className="rounded-xl border border-dashed border-border bg-card px-6 py-10 text-center shadow-sm">
+      <h2 className="text-xl font-semibold text-foreground">Welcome{viewer?.name ? `, ${viewer.name}` : ''}!</h2>
+      <p className="mx-auto mt-3 max-w-sm text-sm text-muted-foreground">
+        Use the intake form below to craft your first guided learning session. Vibecoursing will transform a topic into phases and key terms to track.
       </p>
     </div>
   );
@@ -512,72 +534,78 @@ function EmptySessionState({ viewer }: { viewer: ViewerSummary }) {
 
 function MissingSessionSelectionState() {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-slate-300 bg-muted/20 px-6 py-10 text-center text-muted-foreground dark:border-slate-700/70">
-      <h3 className="text-sm font-medium text-foreground">Select a session to view its progress</h3>
-      <p className="max-w-sm text-sm">Pick any session from the sidebar or use the New button to draft a fresh learning topic.</p>
+    <div className="rounded-xl border border-dashed border-border bg-card px-6 py-8 text-center text-muted-foreground shadow-sm">
+      <h3 className="text-base font-semibold text-foreground">Select a session to view its progress</h3>
+      <p className="mx-auto mt-3 max-w-sm text-sm">
+        Pick any session from the sidebar or use the New button to draft a fresh learning topic.
+      </p>
     </div>
   );
 }
 
-function SessionOverviewCard({
+function CourseDashboardContent({
   session,
   phaseProgress,
+  variant = 'sidebar',
 }: {
   session: SessionSummary;
   phaseProgress?: SessionPhaseProgress[];
+  variant?: 'sidebar' | 'compact';
 }) {
   const phasePercent = session.totalPhases > 0 ? Math.round((session.completedPhases / session.totalPhases) * 100) : 0;
   const termPercent = session.totalTerms > 0 ? Math.round((session.completedTerms / session.totalTerms) * 100) : 0;
   const nextPhase = phaseProgress?.find((phase) => !phase.isComplete) ?? null;
   const allPhasesComplete = phaseProgress ? phaseProgress.every((phase) => phase.isComplete) : false;
   const learnedTerms = phaseProgress ? Array.from(new Set(phaseProgress.flatMap((phase) => phase.coveredTerms))) : [];
-  const displayedLearnedTerms = learnedTerms.slice(0, 24);
+  const displayedLearnedTerms = learnedTerms.slice(0, variant === 'sidebar' ? 18 : 12);
+  const focusTerms = nextPhase ? nextPhase.remainingTerms.slice(0, 6) : [];
+
+  const containerClasses = variant === 'compact' ? 'space-y-5' : 'space-y-6';
+  const titleClasses = variant === 'compact' ? 'text-lg font-semibold' : 'text-xl font-bold';
 
   return (
-    <div className="flex min-h-[460px] flex-col gap-5 rounded-md border border-slate-200 bg-background px-6 py-6 shadow-sm dark:border-slate-700">
+    <div className={containerClasses}>
       <div>
-        <h1 className="text-2xl font-semibold text-foreground">{session.topic}</h1>
-        <p className="text-sm text-muted-foreground">
+        <h2 className={`${titleClasses} leading-tight text-foreground`}>{session.topic}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
           {session.currentPhaseIndex !== null
             ? `Currently in phase ${session.currentPhaseIndex + 1} of ${session.totalPhases}`
             : 'Phase status pending'}
         </p>
       </div>
-      {phaseProgress && (
-        <div className="space-y-3">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Overall progress</span>
-          <div className="space-y-3">
-            <ProgressStat
-              label="Phase progression"
-              percent={phasePercent}
-              detail={`${session.completedPhases}/${session.totalPhases}`}
-            />
-            <ProgressStat
-              label="Key terms covered"
-              percent={termPercent}
-              detail={`${session.completedTerms}/${session.totalTerms}`}
-            />
-          </div>
-        </div>
-      )}
-      <div className="grid gap-4 md:grid-cols-2">
-        <InfoField
-          label="Created"
-          value={new Date(session.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+      <div className="space-y-4">
+        <ProgressStat
+          label="Overall progress"
+          percent={phasePercent}
+          detail={`${session.completedPhases}/${session.totalPhases}`}
         />
-        <InfoField
-          label="Last updated"
-          value={new Date(session.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+        <ProgressStat
+          label="Key terms covered"
+          percent={termPercent}
+          detail={`${session.completedTerms}/${session.totalTerms}`}
         />
       </div>
-      {phaseProgress && <PhaseProgressList phases={phaseProgress} />}
+      <div className="space-y-1 text-xs text-muted-foreground">
+        <div>Created: {new Date(session.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
+        <div>Last updated: {new Date(session.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
+      </div>
+      {phaseProgress && phaseProgress.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold tracking-wider text-muted-foreground">Pulse summary</h3>
+          <PhaseProgressList phases={phaseProgress} />
+        </div>
+      )}
       {phaseProgress && (
-        <LearnedTermsSection
-          learnedTerms={displayedLearnedTerms}
-          nextPhase={nextPhase}
-          allComplete={allPhasesComplete}
-          hasMore={learnedTerms.length > displayedLearnedTerms.length}
-        />
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold tracking-wider text-muted-foreground">Legend terms</h3>
+          <LegendTermsSection
+            focusTerms={focusTerms}
+            learnedTerms={displayedLearnedTerms}
+            nextPhase={nextPhase}
+            allComplete={allPhasesComplete}
+            hasMoreLearned={learnedTerms.length > displayedLearnedTerms.length}
+          />
+        </div>
       )}
     </div>
   );
@@ -595,102 +623,108 @@ function ProgressStat({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">{label}</span>
-        <span>{detail}</span>
+        <span className="font-semibold tracking-wider uppercase text-muted-foreground">{label}</span>
+        <span className="text-xs font-medium text-foreground">{detail}</span>
       </div>
-      <ProgressBar percent={percent} />
+      <ProgressBar percent={percent} className="h-2" />
     </div>
   );
 }
 
-function ProgressBar({ percent }: { percent: number }) {
+function ProgressBar({ percent, className = 'h-2' }: { percent: number; className?: string }) {
   const clamped = Math.max(0, Math.min(100, percent));
   return (
-    <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700">
-      <div className="h-2 rounded-full bg-foreground transition-all" style={{ width: `${clamped}%` }} />
-    </div>
-  );
-}
-
-function InfoField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-      <div className="mt-2 text-sm text-foreground">{value}</div>
+    <div className={`w-full overflow-hidden rounded-full bg-muted ${className}`}>
+      <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${clamped}%` }} />
     </div>
   );
 }
 
 function PhaseProgressList({ phases }: { phases: SessionPhaseProgress[] }) {
   return (
-    <div className="space-y-3 rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Phase summary</span>
-      <ul className="space-y-3">
-        {phases.map((phase) => {
-          const percent = phase.totalTerms > 0 ? Math.round((phase.completedTerms / phase.totalTerms) * 100) : 0;
-          return (
-            <li key={phase.index} className="space-y-2">
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">{phase.name}</span>
-                <span>
-                  {phase.completedTerms}/{phase.totalTerms}
-                </span>
+    <ul className="space-y-3">
+      {phases.map((phase) => {
+        const percent = phase.totalTerms > 0 ? Math.round((phase.completedTerms / phase.totalTerms) * 100) : 0;
+        const remaining = phase.remainingTerms.slice(0, 5);
+        const hasMoreRemaining = phase.remainingTerms.length > remaining.length;
+        return (
+          <li key={phase.index} className="space-y-2 rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-sm font-medium leading-tight text-foreground">{phase.name}</span>
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                {phase.completedTerms}/{phase.totalTerms}
+              </span>
+            </div>
+            <ProgressBar percent={percent} className="h-1.5" />
+            {remaining.length > 0 && (
+              <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                {remaining.map((term) => (
+                  <span key={`${phase.index}-${term}`} className="rounded-full border border-border px-2 py-0.5">
+                    {term}
+                  </span>
+                ))}
+                {hasMoreRemaining && (
+                  <span className="rounded-full border border-dashed border-border px-2 py-0.5">+ more</span>
+                )}
               </div>
-              <ProgressBar percent={percent} />
-              {phase.remainingTerms.length > 0 && (
-                <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                  {phase.remainingTerms.map((term) => (
-                    <span
-                      key={`${phase.index}-${term}`}
-                      className="rounded-full border border-slate-200 bg-muted/50 px-2 py-0.5 dark:border-slate-700"
-                    >
-                      {term}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
-function LearnedTermsSection({
+function LegendTermsSection({
+  focusTerms,
   learnedTerms,
   nextPhase,
   allComplete,
-  hasMore,
+  hasMoreLearned,
 }: {
+  focusTerms: string[];
   learnedTerms: string[];
   nextPhase: SessionPhaseProgress | null;
   allComplete: boolean;
-  hasMore: boolean;
+  hasMoreLearned: boolean;
 }) {
   return (
-    <div className="space-y-3 rounded-md border border-slate-200 bg-background p-4 shadow-sm dark:border-slate-700">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Learned terms</span>
-      {learnedTerms.length > 0 ? (
-        <div className="flex flex-wrap gap-2 text-[11px]">
-          {learnedTerms.map((term) => (
-            <span
-              key={`learned-${term}`}
-              className="rounded-full bg-emerald-500/10 px-2 py-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
-            >
-              {term}
-            </span>
-          ))}
-          {hasMore && (
-            <span className="rounded-full border border-slate-200 bg-muted/40 px-2 py-1 text-muted-foreground dark:border-slate-700">
-              + more terms tracked
-            </span>
-          )}
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">Complete a turn to start tracking learned terms.</p>
-      )}
-      <div className="rounded-md border border-dashed border-slate-200 bg-muted/40 p-3 text-xs text-muted-foreground dark:border-slate-700">
+    <div className="space-y-4 rounded-xl border border-border bg-card px-4 py-4 shadow-sm">
+      <div>
+        <div className="text-xs font-semibold uppercase tracking-wide text-primary">Your focus</div>
+        {focusTerms.length > 0 ? (
+          <ul className="mt-2 space-y-2 text-sm text-foreground">
+            {focusTerms.map((term) => (
+              <li key={term} className="flex items-start gap-2">
+                <span className="mt-1 text-muted-foreground">•</span>
+                <span>{term}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-2 text-sm text-muted-foreground">Focus updates after the assistant introduces the next phase.</p>
+        )}
+      </div>
+      <div>
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Learned terms</span>
+        {learnedTerms.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-primary">
+            {learnedTerms.map((term) => (
+              <span key={`learned-${term}`} className="rounded-full bg-primary/10 px-2 py-1">
+                {term}
+              </span>
+            ))}
+            {hasMoreLearned && (
+              <span className="rounded-full border border-dashed border-border px-2 py-1 text-muted-foreground">
+                + more terms tracked
+              </span>
+            )}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-muted-foreground">Complete a turn to start tracking learned terms.</p>
+        )}
+      </div>
+      <div className="rounded-md border border-dashed border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
         {allComplete ? (
           <span>All phases are complete. Reflect on your progress or spin up a new topic when ready.</span>
         ) : nextPhase ? (
@@ -705,20 +739,156 @@ function LearnedTermsSection({
   );
 }
 
+function CourseDashboardShell({
+  user,
+  onSignOut,
+  children,
+}: {
+  user: AuthLikeUser | null | undefined;
+  onSignOut: () => void;
+  children: ReactNode;
+}) {
+  const profile = deriveProfileFields(user);
+  const displayName = profile.name ?? profile.email ?? 'Learner';
 
-function SessionTranscriptPanel({
-  sessionId,
+  return (
+    <div className="flex h-full flex-col bg-card text-foreground">
+      <div className="flex items-center justify-between border-b border-border px-6 py-4">
+        <div className="flex flex-col">
+          <span className="text-sm font-semibold leading-tight">{displayName}</span>
+          {profile.email && <span className="text-xs text-muted-foreground">{profile.email}</span>}
+        </div>
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition hover:border-primary hover:text-primary"
+        >
+          Sign out
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-6 py-6">{children}</div>
+      <div className="h-4 gradient-stripe" />
+    </div>
+  );
+}
+
+function CourseDashboardPanel({
+  user,
+  onSignOut,
+  session,
   transcript,
 }: {
-  sessionId: Id<'learningSessions'>;
+  user: AuthLikeUser | null | undefined;
+  onSignOut: () => void;
+  session: SessionSummary;
   transcript: SessionTranscriptData | undefined;
 }) {
+  return (
+    <CourseDashboardShell user={user} onSignOut={onSignOut}>
+      <CourseDashboardContent session={session} phaseProgress={transcript?.phaseProgress} />
+    </CourseDashboardShell>
+  );
+}
+
+function CourseDashboardEmpty({
+  user,
+  onSignOut,
+}: {
+  user: AuthLikeUser | null | undefined;
+  onSignOut: () => void;
+}) {
+  return (
+    <CourseDashboardShell user={user} onSignOut={onSignOut}>
+      <div className="space-y-4 text-sm text-muted-foreground">
+        <p>No sessions yet. Draft a learning topic to unlock your personalised pulse and legend tracker.</p>
+        <p className="text-xs">Once a session is created, Vibecoursing will surface your plan, phases, and tracked terms here.</p>
+      </div>
+    </CourseDashboardShell>
+  );
+}
+
+function CourseDashboardPlaceholder({
+  user,
+  onSignOut,
+}: {
+  user: AuthLikeUser | null | undefined;
+  onSignOut: () => void;
+}) {
+  return (
+    <CourseDashboardShell user={user} onSignOut={onSignOut}>
+      <div className="space-y-4 text-sm text-muted-foreground">
+        <p>Select a session from the sidebar to review its phases and tracked terms.</p>
+        <p className="text-xs">Need a fresh topic? Use the New button in the session list to spin up another plan.</p>
+      </div>
+    </CourseDashboardShell>
+  );
+}
+
+function CourseDashboardSkeleton({}: { user: AuthLikeUser | null | undefined; onSignOut: () => void }) {
+  return (
+    <div className="flex h-full flex-col bg-card">
+      <div className="flex items-center justify-between border-b border-border px-6 py-4">
+        <div className="h-5 w-32 rounded bg-muted/60" />
+        <div className="h-7 w-20 rounded bg-muted/60" />
+      </div>
+      <div className="flex-1 space-y-4 overflow-hidden px-6 py-6">
+        <div className="h-6 w-3/4 rounded bg-muted/60" />
+        <div className="space-y-3">
+          <div className="h-4 w-32 rounded bg-muted/50" />
+          <div className="h-4 w-full rounded bg-muted/40" />
+          <div className="h-4 w-full rounded bg-muted/40" />
+        </div>
+        <div className="space-y-3">
+          <div className="h-20 rounded-lg bg-muted/40" />
+          <div className="h-20 rounded-lg bg-muted/40" />
+        </div>
+      </div>
+      <div className="h-4 gradient-stripe" />
+    </div>
+  );
+}
+
+function WorkspaceShell({
+  sidebar,
+  main,
+  course,
+}: {
+  sidebar: ReactNode;
+  main: ReactNode;
+  course: ReactNode;
+}) {
+  return (
+    <div className="flex h-[100svh] w-full overflow-hidden bg-background text-foreground">
+      <aside className="flex h-full w-64 shrink-0 flex-col border-r border-sidebar bg-sidebar px-6 py-6 text-sidebar-foreground">
+        {sidebar}
+      </aside>
+      <main className="flex h-full flex-1 flex-col overflow-hidden bg-background">{main}</main>
+      <aside className="hidden h-full w-80 shrink-0 flex-col border-l border-border bg-card xl:flex">
+        {course}
+      </aside>
+    </div>
+  );
+}
+
+
+function SessionTranscriptPanel({
+  session,
+  transcript,
+  onStartNewSession,
+}: {
+  session: SessionSummary;
+  transcript: SessionTranscriptData | undefined;
+  onStartNewSession: () => void;
+}) {
+  const sessionId = session.id;
   const runSessionTurn = useAction(api.mistral.runSessionTurn);
+  const refreshSessionFollowUps = useAction(api.mistral.refreshSessionFollowUps);
   const [draft, setDraft] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFollowUp, setSelectedFollowUp] = useState<Id<'sessionFollowUps'> | null>(null);
   const messageContainerRef = useRef<HTMLDivElement>(null);
+  const lastFollowUpRefreshMessageId = useRef<Id<'sessionMessages'> | null>(null);
 
   const isLoading = transcript === undefined;
   const rawMessages = transcript?.messages;
@@ -745,6 +915,28 @@ function SessionTranscriptPanel({
   }, [messages.length]);
 
   useEffect(() => {
+    if (!latestAssistantMessageId) {
+      lastFollowUpRefreshMessageId.current = null;
+      return;
+    }
+    if (followUps.length > 0) {
+      lastFollowUpRefreshMessageId.current = latestAssistantMessageId;
+      return;
+    }
+    if (lastFollowUpRefreshMessageId.current === latestAssistantMessageId) {
+      return;
+    }
+    lastFollowUpRefreshMessageId.current = latestAssistantMessageId;
+    void refreshSessionFollowUps({
+      sessionId,
+      assistantMessageId: latestAssistantMessageId,
+    }).catch((err) => {
+      console.error('Failed to refresh follow-up prompts', err);
+      lastFollowUpRefreshMessageId.current = null;
+    });
+  }, [followUps.length, latestAssistantMessageId, refreshSessionFollowUps, sessionId]);
+
+  useEffect(() => {
     if (!selectedFollowUp) {
       return;
     }
@@ -761,20 +953,21 @@ function SessionTranscriptPanel({
         setError('Enter a message to continue the session.');
         return;
       }
-      setDraft(sourcePrompt);
       setIsSubmitting(true);
       setError(null);
       try {
+        setDraft('');
         await runSessionTurn({
           sessionId,
           prompt: trimmed,
           followUpId: options?.followUpId ?? selectedFollowUp ?? undefined,
         });
-        setDraft('');
         setSelectedFollowUp(null);
       } catch (err) {
         console.error('Failed to run session turn', err);
         setError(normaliseSessionTurnError(err));
+        // restore draft so the user can edit/resubmit
+        setDraft(sourcePrompt);
       } finally {
         setIsSubmitting(false);
       }
@@ -802,12 +995,31 @@ function SessionTranscriptPanel({
   );
 
   return (
-    <div className="flex min-h-[520px] flex-1 flex-col overflow-hidden rounded-md border border-slate-200 bg-background shadow-sm dark:border-slate-700 xl:min-h-[620px]">
-      <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-        <h3 className="text-base font-semibold text-foreground">Session transcript</h3>
-        {isLoading && <span className="text-xs text-muted-foreground">Loading…</span>}
+    <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border px-6 py-5">
+        <div className="space-y-1">
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+            Session transcript
+          </span>
+          <h3 className="text-lg font-semibold leading-tight text-foreground">{session.topic}</h3>
+          <p className="text-sm text-muted-foreground">
+            {session.currentPhaseIndex !== null
+              ? `Phase ${session.currentPhaseIndex + 1} of ${session.totalPhases}`
+              : 'Phase status pending'}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {isLoading && <span className="text-xs text-muted-foreground">Loading…</span>}
+          <button
+            type="button"
+            onClick={onStartNewSession}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition hover:border-primary hover:text-primary"
+          >
+            New session
+          </button>
+        </div>
       </div>
-      <div ref={messageContainerRef} className="flex-1 overflow-y-auto px-6 py-4">
+      <div ref={messageContainerRef} className="flex-1 overflow-y-auto bg-background px-6 py-6">
         {isLoading ? (
           <TranscriptSkeleton />
         ) : messages.length === 0 ? (
@@ -816,7 +1028,7 @@ function SessionTranscriptPanel({
           <TranscriptMessageList messages={messages} />
         )}
       </div>
-      <div className="space-y-3 border-t border-slate-200 px-6 py-4 dark:border-slate-700">
+      <div className="space-y-4 border-t border-border bg-card px-6 py-5">
         <FollowUpSuggestions
           followUps={followUps}
           onSelect={handleSelectFollowUp}
@@ -836,38 +1048,51 @@ function SessionTranscriptPanel({
 }
 
 function TranscriptMessageList({ messages }: { messages: SessionTranscriptMessage[] }) {
+  const seenMessageIds = useRef(new Set<Id<'sessionMessages'>>());
+
   return (
     <ul className="flex flex-col gap-4">
-      {messages.map((message) => (
-        <li
-          key={message.id}
-          className={`rounded-md border px-4 py-3 text-sm shadow-sm ${
-            message.role === 'assistant'
-              ? 'border-slate-200 bg-background text-foreground dark:border-slate-700'
-              : 'border-slate-300 bg-muted/40 text-foreground dark:border-slate-600'
-          }`}
-        >
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{message.role === 'assistant' ? 'Vibecoursing' : 'You'}</span>
-            <span>{formatTimestamp(message.createdAt)}</span>
-          </div>
-          <TranscriptMessageBody body={message.body} />
-          {message.termsCovered.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2 text-xs">
-              {message.termsCovered.map((term) => (
-                <span key={`${message.id}-${term}`} className="rounded-full bg-emerald-500/10 px-2 py-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
-                  {term}
-                </span>
-              ))}
+      {messages.map((message) => {
+        const hasSeen = seenMessageIds.current.has(message.id);
+        if (!hasSeen) {
+          seenMessageIds.current.add(message.id);
+        }
+        const baseClasses = `rounded-xl border px-4 py-3 text-sm shadow-sm transition ${
+          message.role === 'assistant'
+            ? 'border-border bg-card text-foreground'
+            : 'border-primary/40 bg-primary/10 text-foreground'
+        }`;
+        const animationClass = hasSeen ? '' : 'animate-fade-in-up';
+
+        return (
+          <li key={message.id} className={`${baseClasses} ${animationClass}`.trim()}>
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="font-semibold tracking-wide text-foreground">
+                {message.role === 'assistant' ? 'Vibecoursing' : 'You'}
+              </span>
+              <span>{formatTimestamp(message.createdAt)}</span>
             </div>
-          )}
-          {message.totalTokens !== null && (
-            <div className="mt-2 text-xs text-muted-foreground">
-              Tokens: prompt {message.promptTokens ?? 0}, completion {message.completionTokens ?? 0}, total {message.totalTokens}
-            </div>
-          )}
-        </li>
-      ))}
+            <TranscriptMessageBody body={message.body} />
+            {message.termsCovered.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                {message.termsCovered.map((term) => (
+                  <span
+                    key={`${message.id}-${term}`}
+                    className="rounded-full bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary"
+                  >
+                    {term}
+                  </span>
+                ))}
+              </div>
+            )}
+            {message.totalTokens !== null && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Tokens: prompt {message.promptTokens ?? 0}, completion {message.completionTokens ?? 0}, total {message.totalTokens}
+              </div>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -911,8 +1136,8 @@ function FollowUpSuggestions({
             type="button"
             className={`rounded-full border px-3 py-1 text-xs transition ${
               isSelected
-                ? 'border-foreground bg-foreground text-background shadow-sm'
-                : 'border-slate-200 bg-background text-muted-foreground hover:border-foreground hover:text-foreground dark:border-slate-700'
+                ? 'border-primary bg-primary text-background shadow-sm'
+                : 'border-border bg-background text-muted-foreground hover:border-primary hover:text-primary'
             }`}
             onClick={() => onSelect(followUp)}
             disabled={disabled}
@@ -939,7 +1164,6 @@ function SessionTurnComposer({
   isSubmitting: boolean;
   error: string | null;
 }) {
-  const remaining = MAX_PROMPT_LENGTH - draft.length;
   const canSubmit = draft.trim().length > 0 && !isSubmitting;
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -963,23 +1187,23 @@ function SessionTurnComposer({
         rows={3}
         maxLength={MAX_PROMPT_LENGTH}
         placeholder="Ask a question, reflect on a term, or request an example."
-        className="w-full resize-y rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+        className="w-full min-h-[120px] resize-y rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-0"
       />
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>{remaining} characters left</span>
+        <span>{draft.length}/{MAX_PROMPT_LENGTH} characters</span>
         <span>Press ⌘+Enter (or Ctrl+Enter) to send</span>
       </div>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         {error ? (
-          <span className="text-xs text-red-500">{error}</span>
+          <span className="text-xs text-destructive">{error}</span>
         ) : (
-          <span className="text-xs text-muted-foreground">Turns sync automatically to your learning plan.</span>
+          <span className="text-xs text-muted-foreground italic">Turns sync automatically to your learning plan.</span>
         )}
         <button
           type="submit"
           disabled={!canSubmit}
-          className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
-            isSubmitting ? 'cursor-progress' : ''
+          className={`inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-60 ${
+            isSubmitting ? 'cursor-progress opacity-80' : ''
           }`}
         >
           {isSubmitting ? 'Sending…' : 'Send turn'}
@@ -991,10 +1215,10 @@ function SessionTurnComposer({
 
 function TranscriptSkeleton() {
   return (
-    <div className="space-y-3">
-      <div className="h-20 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-      <div className="h-20 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
-      <div className="h-20 rounded-md bg-slate-300/30 dark:bg-slate-700/40" />
+    <div className="space-y-4">
+      <div className="h-24 rounded-xl bg-muted/60" />
+      <div className="h-24 rounded-xl bg-muted/60" />
+      <div className="h-24 rounded-xl bg-muted/60" />
     </div>
   );
 }
@@ -1002,8 +1226,10 @@ function TranscriptSkeleton() {
 function EmptyTranscriptState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
-      <h4 className="text-sm font-medium">No messages yet</h4>
-      <p className="max-w-sm text-xs">Kick off the session with a question or reflection. We will track progress against your plan.</p>
+      <h4 className="text-sm font-medium text-foreground">No messages yet</h4>
+      <p className="max-w-sm text-xs text-muted-foreground">
+        Kick off the session with a question or reflection. We will track progress against your plan.
+      </p>
     </div>
   );
 }
@@ -1095,24 +1321,26 @@ function SessionIntake({
   };
 
   return (
-    <div className="relative overflow-hidden rounded-md border border-slate-200 bg-background p-6 shadow-sm dark:border-slate-700">
+    <div className="relative overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-lg">
       {onClose && (
         <button
           type="button"
           onClick={onClose}
-          className="absolute right-4 top-4 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+          className="absolute right-4 top-4 text-xs font-medium text-muted-foreground transition hover:text-primary"
         >
           Close
         </button>
       )}
       {isSubmitting && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-background/85 px-6 text-center backdrop-blur-sm">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-card/90 px-6 text-center backdrop-blur-sm">
           <div className="flex flex-col items-center gap-4">
             <span className="sr-only">Generating your learning session…</span>
             <div
               aria-hidden
-              className="h-12 w-12 animate-spin rounded-full border-2 border-foreground/20 border-t-foreground"
-            />
+              className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-primary/30 border-t-primary"
+            >
+              <span className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-b-transparent" />
+            </div>
             <div className="space-y-1">
               <p className="text-sm font-semibold text-foreground">Crafting your learning session…</p>
               <p className="text-xs text-muted-foreground">
@@ -1136,7 +1364,7 @@ function SessionIntake({
           </ol>
         </div>
       )}
-      <h3 className="text-base font-semibold text-foreground">Start a new learning session</h3>
+      <h3 className="text-lg font-semibold text-foreground">Start a new learning session</h3>
       <p className="mt-1 text-sm text-muted-foreground">
         Share a topic (and optional learner context). Vibecoursing will draft phases and key terms, then store the plan in Convex.
       </p>
@@ -1150,7 +1378,7 @@ function SessionIntake({
             value={topic}
             onChange={(event) => setTopic(event.target.value)}
             placeholder="e.g. Storytelling fundamentals for product demos"
-            className="w-full rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+            className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-0"
           />
         </div>
         <div className="flex flex-col gap-2">
@@ -1163,7 +1391,7 @@ function SessionIntake({
             onChange={(event) => setLearnerProfile(event.target.value)}
             rows={3}
             placeholder="Who is this for? Prior knowledge, constraints, desired outcomes."
-            className="w-full resize-y rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+            className="w-full resize-y rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-0"
           />
         </div>
         <div className="flex flex-col gap-2">
@@ -1175,23 +1403,23 @@ function SessionIntake({
             value={tone}
             onChange={(event) => setTone(event.target.value)}
             placeholder="Encouraging, pragmatic, playful..."
-            className="w-full rounded-md border border-slate-200 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus:border-foreground focus:ring-0 dark:border-slate-700"
+            className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-0"
           />
         </div>
-        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <span className="text-xs text-muted-foreground">Plans save instantly so you can jump into a session right away.</span>
           <button
             type="submit"
             disabled={!canSubmit}
-            className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-60 ${
-              isSubmitting ? 'cursor-progress' : ''
+            className={`inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-60 ${
+              isSubmitting ? 'cursor-progress opacity-80' : ''
             }`}
           >
             {isSubmitting ? 'Generating…' : 'Generate plan'}
           </button>
         </div>
         {error && (
-          <p className="text-xs text-red-500" role="alert" aria-live="assertive">
+          <p className="text-xs text-destructive" role="alert" aria-live="assertive">
             {error}
           </p>
         )}
@@ -1208,13 +1436,13 @@ function SessionIntake({
 
 function PlanPreview({ plan }: { plan: GeneratedPlan }) {
   return (
-    <div className="mt-4 rounded-md border border-dashed border-slate-300 bg-muted/30 p-4 text-sm text-foreground shadow-sm dark:border-slate-700/70">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Plan saved</span>
+    <div className="mt-4 rounded-2xl border border-dashed border-border bg-muted/40 p-4 text-sm text-foreground shadow-sm">
+      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Plan saved</span>
       <h4 className="mt-2 text-base font-semibold text-foreground">{plan.topic}</h4>
       {plan.summary && <p className="text-sm text-muted-foreground">{plan.summary}</p>}
       <ol className="mt-3 space-y-3">
         {plan.phases.map((phase, index) => (
-          <li key={`${phase.name}-${index}`} className="rounded-md border border-slate-200 bg-background p-3 shadow-sm dark:border-slate-700">
+          <li key={`${phase.name}-${index}`} className="rounded-xl border border-border bg-card p-3 shadow-sm">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span className="font-semibold text-foreground">Phase {index + 1}</span>
               <span>{phase.name}</span>
@@ -1233,15 +1461,9 @@ function PlanPreview({ plan }: { plan: GeneratedPlan }) {
 
 function SessionMainSkeleton() {
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 px-6 py-8">
-      <div className="h-9 w-3/4 rounded bg-slate-300/30 dark:bg-slate-700/40" />
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
-        <div className="h-24 rounded bg-slate-300/30 dark:bg-slate-700/40" />
-      </div>
-      <div className="flex-1 rounded bg-slate-300/30 dark:bg-slate-700/40" />
+    <div className="flex h-full flex-col gap-6 px-8 py-8">
+      <div className="h-6 w-2/3 rounded bg-muted/60" />
+      <div className="flex-1 rounded-2xl border border-border bg-card" />
     </div>
   );
 }
@@ -1261,18 +1483,6 @@ function UnauthenticatedState() {
           </button>
         </a>
       </div>
-    </div>
-  );
-}
-
-function UserMenu({ user, onSignOut }: { user: AuthLikeUser; onSignOut: () => void }) {
-  const derivedProfile = useMemo(() => deriveProfileFields(user), [user]);
-  return (
-    <div className="flex items-center gap-3">
-      <span className="text-sm text-muted-foreground">{derivedProfile.email ?? 'Unknown user'}</span>
-      <button onClick={onSignOut} className="rounded-md bg-red-500 px-3 py-1 text-sm font-medium text-white hover:bg-red-600">
-        Sign out
-      </button>
     </div>
   );
 }

@@ -1,26 +1,153 @@
 @import 'tailwindcss';
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Warm, jazz-inspired palette */
+  --background: 30 40% 97%;
+  --foreground: 20 15% 15%;
+
+  --card: 30 35% 98%;
+  --card-foreground: 20 15% 15%;
+
+  --popover: 30 35% 98%;
+  --popover-foreground: 20 15% 15%;
+
+  --primary: 15 85% 55%;
+  --primary-foreground: 30 40% 99%;
+
+  --secondary: 35 90% 60%;
+  --secondary-foreground: 20 15% 15%;
+
+  --muted: 30 25% 92%;
+  --muted-foreground: 20 10% 45%;
+
+  --accent: 25 90% 55%;
+  --accent-foreground: 30 40% 99%;
+
+  --destructive: 0 85% 60%;
+  --destructive-foreground: 30 40% 99%;
+
+  --border: 30 20% 88%;
+  --input: 30 20% 90%;
+  --ring: 15 85% 55%;
+
+  /* Sidebar tokens */
+  --sidebar-background: 30 35% 96%;
+  --sidebar-foreground: 20 15% 20%;
+  --sidebar-primary: 15 85% 55%;
+  --sidebar-primary-foreground: 30 40% 99%;
+  --sidebar-accent: 30 25% 92%;
+  --sidebar-accent-foreground: 20 15% 15%;
+  --sidebar-border: 30 20% 88%;
+  --sidebar-ring: 15 85% 55%;
+
+  /* Signature gradient stops */
+  --gradient-yellow: 45 95% 60%;
+  --gradient-orange-1: 35 95% 58%;
+  --gradient-orange-2: 25 95% 55%;
+  --gradient-orange-3: 18 90% 52%;
+  --gradient-red-1: 12 88% 50%;
+  --gradient-red-2: 5 85% 48%;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-sidebar: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+body {
+  color: hsl(var(--foreground));
+  background-color: hsl(var(--background));
+  font-family: var(--font-geist-sans, Arial, Helvetica, sans-serif);
+}
+
+@layer utilities {
+  .gradient-stripe {
+    background: linear-gradient(
+      to bottom,
+      hsl(var(--gradient-yellow)),
+      hsl(var(--gradient-orange-1)),
+      hsl(var(--gradient-orange-2)),
+      hsl(var(--gradient-orange-3)),
+      hsl(var(--gradient-red-1)),
+      hsl(var(--gradient-red-2))
+    );
+  }
+
+  .gradient-accent {
+    background: linear-gradient(135deg, hsl(var(--gradient-orange-1)), hsl(var(--gradient-red-1)));
+  }
+
+  .pixel-border {
+    box-shadow:
+      0 0 0 2px hsl(var(--border)),
+      0 0 0 3px hsl(var(--foreground) / 0.1);
+  }
+
+  .bg-sidebar {
+    background-color: hsl(var(--sidebar-background));
+  }
+
+  .bg-sidebar-accent {
+    background-color: hsl(var(--sidebar-accent));
+  }
+
+  .text-sidebar-foreground {
+    color: hsl(var(--sidebar-foreground));
+  }
+
+  .border-sidebar {
+    border-color: hsl(var(--sidebar-border));
+  }
+
+  .animate-fade-in-up {
+    animation: fade-in-up 0.35s ease-out both;
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
