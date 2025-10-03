@@ -207,6 +207,39 @@ const markdownComponents: ReactMarkdownComponents = {
   ),
 };
 
+const followUpMarkdownComponents: ReactMarkdownComponents = {
+  p: ({ children, ...props }) => (
+    <span {...props} className="inline text-xs font-semibold leading-snug">
+      {children}
+    </span>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong {...props} className="font-semibold">
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em {...props} className="italic">
+      {children}
+    </em>
+  ),
+  code: ({ children, ...props }) => (
+    <code {...props} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
+      {children}
+    </code>
+  ),
+  ul: ({ children, ...props }) => (
+    <span {...props} className="inline">
+      {children}
+    </span>
+  ),
+  ol: ({ children, ...props }) => (
+    <span {...props} className="inline">
+      {children}
+    </span>
+  ),
+};
+
 function deriveProfileFields(user: AuthLikeUser | null | undefined): DerivedProfile {
   if (!user) {
     return {};
@@ -1135,7 +1168,7 @@ function FollowUpSuggestions({
       <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
         Suggested follow-up questions
       </span>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-1.5">
         {followUps.map((followUp) => {
           const isSelected = followUp.id === selectedId;
           const ariaLabel = followUp.rationale ? `${followUp.prompt}. ${followUp.rationale}` : followUp.prompt;
@@ -1143,7 +1176,7 @@ function FollowUpSuggestions({
             <button
               key={followUp.id}
               type="button"
-              className={`flex max-w-[260px] flex-col gap-1 rounded-lg border px-3 py-2 text-left text-xs transition ${
+              className={`inline-flex max-w-[220px] items-center justify-center gap-1 rounded-full border px-3 py-1 text-left transition ${
                 isSelected
                   ? 'border-primary bg-primary text-primary-foreground shadow-sm'
                   : 'border-border bg-background text-foreground hover:border-primary hover:text-primary'
@@ -1153,22 +1186,15 @@ function FollowUpSuggestions({
               title={followUp.rationale ?? undefined}
               aria-label={ariaLabel}
             >
-              <span
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={followUpMarkdownComponents}
                 className={`text-xs font-semibold leading-snug ${
                   isSelected ? 'text-primary-foreground' : 'text-foreground'
                 }`}
               >
                 {followUp.prompt}
-              </span>
-              {followUp.rationale ? (
-                <span
-                  className={`text-[10px] leading-snug ${
-                    isSelected ? 'text-primary-foreground/90' : 'text-muted-foreground'
-                  }`}
-                >
-                  {followUp.rationale}
-                </span>
-              ) : null}
+              </ReactMarkdown>
             </button>
           );
         })}
