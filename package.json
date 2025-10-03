@@ -3,14 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "homepage": "https://github.com/workos/template-convex-nextjs-authkit/#readme",
+  "homepage": "https://github.com/guustgoossens/vibecoursing#readme",
   "convex-authkit-auto-provisioning": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/workos/template-convex-nextjs-authkit.git"
+    "url": "https://github.com/guustgoossens/vibecoursing.git"
   },
   "bugs": {
-    "url": "https://github.com/workos/template-convex-nextjs-authkit/issues"
+    "url": "https://github.com/guustgoossens/vibecoursing/issues"
   },
   "scripts": {
     "dev": "npm-run-all --parallel dev:frontend dev:backend",

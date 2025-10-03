@@ -1,83 +1,116 @@
-# Welcome to your Convex + Next.js + WorkOS AuthKit app
+# Vibecoursing
 
-This is a [Convex](https://convex.dev/) project migrated to use WorkOS AuthKit for authentication.
+Vibecoursing is an AI-guided conversational learning platform built with Next.js and Convex. Learners pick a topic, receive an AI-generated lesson plan, and progress through a chat experience that surfaces key terms, suggested follow-up prompts, and visible progress indicators. Authentication flows through WorkOS AuthKit and all AI interactions run via the Mistral SDK.
 
-After the initial setup (<2 minutes) you'll have a working full-stack app using:
+## Feature Highlights
 
-- Convex as your backend (database, server logic)
-- [React](https://react.dev/) as your frontend (web page interactivity)
-- [Next.js](https://nextjs.org/) for optimized web hosting and page routing
-- [Tailwind](https://tailwindcss.com/) for building great looking accessible UI
-- [WorkOS AuthKit](https://authkit.com/) for authentication
+- **Topic blueprints:** AI generates structured learning plans with phases, objectives, and key terms.
+- **Conversational learning:** Chat UI records user + AI turns and renders optional follow-up prompts to keep momentum.
+- **Progress tracking:** Phase progress, covered terms, and completion timelines update in real time.
+- **Session persistence:** Sessions are stored in Convex so learners can pause and resume any topic.
+- **Secure auth:** WorkOS AuthKit provides sign-in, session management, and middleware protection.
 
-## Get started
+## Architecture Overview
 
-1. Clone this repository and install dependencies:
+- **Frontend:** Next.js (App Router), React 19, Tailwind CSS.
+- **Backend:** Convex for database, queries, mutations, and server actions.
+- **Auth:** WorkOS AuthKit middleware + hooks (`useAuth`, `withAuth`).
+- **AI Layer:** Convex actions wrapping the Mistral Chat Completions API for plan generation, chat turns, follow-up prompts, and recaps.
+- **Tooling:** TypeScript, ESLint, Prettier.
 
+Directory map:
+```
+app/                Next.js routes, layouts, and client/server components
+components/         Reusable UI building blocks
+convex/             Convex schema, queries, mutations, actions, generated client
+public/             Static assets served by Next.js
+docs/               Product requirements and implementation roadmap
+```
+
+## Prerequisites
+
+- Node.js 20+
+- pnpm 8+ (adapt commands if you prefer npm)
+- Convex CLI (`npm install -g convex`)
+- WorkOS AuthKit project (Client ID, API Key, redirect URI)
+- Mistral API key (and optional custom base URL)
+
+## Setup & Local Development
+
+1. **Install dependencies**
    ```bash
-   npm install
+   pnpm install
    ```
 
-2. Set up your environment variables:
+2. **Create your environment file**
    ```bash
    cp .env.local.example .env.local
    ```
-3. Configure WorkOS AuthKit:
-   - Create a [WorkOS account](https://workos.com/)
-   - Get your Client ID and API Key from the WorkOS dashboard
-   - In the WorkOS dashboard, add `http://localhost:3000/callback` as a redirect URI
-   - Generate a secure password for cookie encryption (minimum 32 characters)
-   - Update your `.env.local` file with these values
+   Fill in the variables with your project credentials:
+   - `WORKOS_CLIENT_ID`
+   - `WORKOS_API_KEY`
+   - `WORKOS_COOKIE_PASSWORD` (≥ 32 chars for session encryption)
+   - `NEXT_PUBLIC_WORKOS_REDIRECT_URI`
+   - `MISTRAL_API_KEY`
+   - `MISTRAL_BASE_URL` (defaults to `https://api.mistral.ai/v1`)
 
-4. Configure Convex:
-
+3. **Provision Convex**
    ```bash
    npx convex dev
    ```
+   The first run links the project to a Convex deployment, regenerates types in `convex/_generated`, and opens the dashboard. Keep this command running in a terminal while developing.
 
-   This will:
-   - Set up your Convex deployment
-   - Add your Convex URL to `.env.local`
-   - Open the Convex dashboard
-
-   Then configure WorkOS authentication in Convex:
-
+4. **Run the full stack**
    ```bash
-   npx convex auth add workos
+   pnpm dev
    ```
+   This launches Next.js (`localhost:3000`) and Convex dev servers. Log in via `/sign-in` to access authenticated routes.
 
-   This creates `convex/auth.config.ts` with WorkOS integration
+5. **Populate initial data (optional)**
+   Use the Convex dashboard or scripts to seed learning sessions if you need demo content for the UI.
 
-5. Run the development server:
+## Useful Scripts
 
-   ```bash
-   npm run dev
-   ```
+| Command | Description |
+| --- | --- |
+| `pnpm dev` | Run Next.js + Convex dev servers in parallel |
+| `pnpm build` | Build the Next.js app for production |
+| `pnpm start` | Serve the production build |
+| `pnpm lint` | Run the Next.js ESLint suite |
+| `pnpm format` | Format files with Prettier |
 
-   This starts both the Next.js frontend and Convex backend in parallel
+Convex commands (`npx convex dev`, `npx convex dashboard`) can also be run directly when you need to manage deployments or inspect data.
 
-6. Open [http://localhost:3000](http://localhost:3000) to see your app
+## Testing & Quality
 
-## WorkOS AuthKit Setup
+- **Static analysis:** `pnpm lint`
+- **Formatting check:** `pnpm format --check`
+- **Manual smoke test:**
+  1. Start `pnpm dev`.
+  2. Sign in via `/sign-in`.
+  3. Create a topic, send a prompt, verify AI responses + follow-ups render, and confirm progress updates.
 
-This app uses WorkOS AuthKit for authentication. Key features:
+Automated tests are not yet wired up; if you add Vitest or Playwright, colocate specs alongside components and document the commands here. When interacting with the Mistral SDK in tests, mock network calls in Convex actions to keep runs deterministic.
 
-- **Redirect-based authentication**: Users are redirected to WorkOS for sign-in/sign-up
-- **Session management**: Automatic token refresh and session handling
-- **Middleware protection**: Routes are protected using Next.js middleware
-- **Client and server hooks**: `useAuth()` for client components, `withAuth()` for server components
+## Deployment
 
-## Learn more
+1. Configure the same env vars (WorkOS + Mistral + Convex) in your hosting provider and Convex production deployment.
+2. Build the app with `pnpm build`; serve it using `pnpm start` or your platform's adapter.
+3. Promote your Convex deployment and update the generated `CONVEX_URL` in production `.env` files.
+4. Verify the WorkOS redirect URI matches the deployed domain (`https://your-domain.com/callback`).
 
-To learn more about developing your project with Convex, check out:
+## Documentation & Planning
 
-- The [Tour of Convex](https://docs.convex.dev/get-started) for a thorough introduction to Convex principles.
-- The rest of [Convex docs](https://docs.convex.dev/) to learn about all Convex features.
-- [Stack](https://stack.convex.dev/) for in-depth articles on advanced topics.
+Product context, requirements, and phased delivery plans live in:
+- `docs/project-requirement-document.md`
+- `docs/mvp_implementation_phase.md`
 
-## Join the community
+Use these documents to guide feature scope, completion criteria, and future phases (onboarding, recaps, analytics).
 
-Join thousands of developers building full-stack apps with Convex:
+## Support & Resources
 
-- Join the [Convex Discord community](https://convex.dev/community) to get help in real-time.
-- Follow [Convex on GitHub](https://github.com/get-convex/), star and contribute to the open-source implementation of Convex.
+- [Convex docs](https://docs.convex.dev/)
+- [WorkOS AuthKit docs](https://workos.com/docs/authkit)
+- [Mistral API reference](https://docs.mistral.ai/)
+
+Issues and feature requests: open a ticket in the GitHub repository once published. Contributions are welcome—follow linting and formatting rules above to keep changes consistent.
