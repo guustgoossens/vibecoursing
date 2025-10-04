@@ -6,6 +6,9 @@ import { ConvexError, v } from 'convex/values';
 
 const DEFAULT_MODEL = 'mistral-large-latest';
 const DEFAULT_BASE_URL = 'https://api.mistral.ai/v1';
+const RETRYABLE_STATUS = 429;
+const MAX_RETRIES = 2;
+const BASE_BACKOFF_MS = 400;
 
 type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -36,6 +39,7 @@ type PhaseProgress = {
   totalTerms: number;
   completedTerms: number;
   remainingTerms: string[];
+  coveredTerms: string[];
   isComplete: boolean;
 };
 
@@ -85,6 +89,17 @@ function cleanString(value?: string | null) {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+function normaliseForMatching(value: string): string {
+  const withoutDiacritics = value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return withoutDiacritics
+    .replace(/[^\p{Letter}\p{Number}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function normaliseFollowUpPrompt(value?: string | null) {
   const cleaned = cleanString(value);
   if (!cleaned) {
@@ -113,6 +128,10 @@ function extractJsonPayload(raw: string): string {
   }
 
   return trimmed;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 type FollowUpSuggestion = {
@@ -270,6 +289,7 @@ async function refreshFollowUpSuggestions(params: {
 }): Promise<void> {
   const { ctx, sessionId, transcriptWithAssistant, phaseProgress, assistantMessage } = params;
   const remainingTerms = phaseProgress.flatMap((phase) => phase.remainingTerms);
+  await sleep(1000);
   const suggestions = await generateFollowUpSuggestions(ctx, transcriptWithAssistant, remainingTerms);
   const completedSuggestions = ensureFollowUpCount({
     suggestions,
@@ -289,14 +309,18 @@ async function refreshFollowUpSuggestions(params: {
 }
 
 function detectCoveredTerms(body: string, terms: Doc<'sessionTerms'>[]): Doc<'sessionTerms'>[] {
-  const lowerBody = body.toLowerCase();
+  const normalisedBody = normaliseForMatching(body);
   const matches: Doc<'sessionTerms'>[] = [];
   for (const term of terms) {
-    const candidate = term.term.trim().toLowerCase();
+    const candidate = term.term.trim();
     if (candidate.length === 0) {
       continue;
     }
-    if (lowerBody.includes(candidate)) {
+    const normalisedCandidate = normaliseForMatching(candidate.split('(')[0] || candidate);
+    if (normalisedCandidate.length === 0) {
+      continue;
+    }
+    if (normalisedBody.includes(normalisedCandidate)) {
       matches.push(term);
     }
   }
@@ -314,8 +338,15 @@ function buildPhaseProgress(
         termsForPhase.push(term);
       }
     }
-    const remaining = termsForPhase.filter((term) => term.firstCoveredAt === undefined).map((term) => term.term);
-    const completedTerms = termsForPhase.length - remaining.length;
+    const coveredTerms = termsForPhase
+      .filter((term) => term.firstCoveredAt !== undefined)
+      .map((term) => term.term)
+      .sort((a, b) => a.localeCompare(b));
+    const remaining = termsForPhase
+      .filter((term) => term.firstCoveredAt === undefined)
+      .map((term) => term.term)
+      .sort((a, b) => a.localeCompare(b));
+    const completedTerms = coveredTerms.length;
     return {
       index: phase.index,
       name: phase.name,
@@ -323,6 +354,7 @@ function buildPhaseProgress(
       totalTerms: termsForPhase.length,
       completedTerms,
       remainingTerms: remaining,
+      coveredTerms,
       isComplete: termsForPhase.length > 0 && remaining.length === 0,
     };
   });
@@ -666,52 +698,65 @@ async function callMistral({ ctx: _ctx, model, temperature, maxTokens, systemPro
     ? [{ role: 'system', content: systemPrompt }, ...messages]
     : messages;
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({
-      model: model ?? DEFAULT_MODEL,
-      temperature: temperature ?? 0.4,
-      max_tokens: maxTokens ?? 800,
-      messages: payloadMessages,
-    }),
-  });
+  let attempt = 0;
+  while (attempt <= MAX_RETRIES) {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        model: model ?? DEFAULT_MODEL,
+        temperature: temperature ?? 0.4,
+        max_tokens: maxTokens ?? 800,
+        messages: payloadMessages,
+      }),
+    });
 
-  const text = await response.text();
-  if (!response.ok) {
-    console.error('Mistral API error', response.status, text);
-    throw new ConvexError('MISTRAL_REQUEST_FAILED');
+    const text = await response.text();
+
+    if (!response.ok) {
+      console.error('Mistral API error', response.status, text);
+      const shouldRetry = response.status === RETRYABLE_STATUS && attempt < MAX_RETRIES;
+      if (shouldRetry) {
+        const backoffMs = BASE_BACKOFF_MS * Math.pow(2, attempt);
+        await sleep(backoffMs);
+        attempt += 1;
+        continue;
+      }
+      throw new ConvexError('MISTRAL_REQUEST_FAILED');
+    }
+
+    let json: any;
+    try {
+      json = JSON.parse(text);
+    } catch (error) {
+      console.error('Failed to parse Mistral response JSON', { error, text });
+      throw new ConvexError('MISTRAL_INVALID_JSON');
+    }
+
+    const content: string | undefined = json?.choices?.[0]?.message?.content;
+    if (!content) {
+      console.error('Mistral response missing content', json);
+      throw new ConvexError('MISTRAL_EMPTY_RESPONSE');
+    }
+
+    const usage: MistralUsage = {
+      promptTokens: json?.usage?.prompt_tokens,
+      completionTokens: json?.usage?.completion_tokens,
+      totalTokens: json?.usage?.total_tokens,
+    };
+
+    return {
+      content,
+      usage,
+      raw: json,
+    };
   }
 
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch (error) {
-    console.error('Failed to parse Mistral response JSON', { error, text });
-    throw new ConvexError('MISTRAL_INVALID_JSON');
-  }
-
-  const content: string | undefined = json?.choices?.[0]?.message?.content;
-  if (!content) {
-    console.error('Mistral response missing content', json);
-    throw new ConvexError('MISTRAL_EMPTY_RESPONSE');
-  }
-
-  const usage: MistralUsage = {
-    promptTokens: json?.usage?.prompt_tokens,
-    completionTokens: json?.usage?.completion_tokens,
-    totalTokens: json?.usage?.total_tokens,
-  };
-
-  return {
-    content,
-    usage,
-    raw: json,
-  };
+  throw new ConvexError('MISTRAL_REQUEST_FAILED');
 }
 
 export const chatTurn = action({
