@@ -559,7 +559,7 @@ function SessionExperience({
 }) {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
-      <div className="flex-1 overflow-hidden px-4 py-5 sm:px-5 sm:py-6">
+      <div className="flex-1 overflow-hidden">
         <SessionTranscriptPanel
           session={session}
           transcript={transcript}
@@ -1051,8 +1051,8 @@ function SessionTranscriptPanel({
   );
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border px-5 py-4">
+    <div className="flex h-full flex-col overflow-hidden bg-background">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3 md:gap-4 md:px-5">
         <div className="space-y-1">
           <span className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             Session transcript
@@ -1075,7 +1075,7 @@ function SessionTranscriptPanel({
           </button>
         </div>
       </div>
-      <div ref={messageContainerRef} className="flex-1 overflow-y-auto bg-background px-4 py-4">
+      <div ref={messageContainerRef} className="flex-1 overflow-y-auto px-3 py-3 md:px-4 md:py-4">
         {isLoading ? (
           <TranscriptSkeleton />
         ) : messages.length === 0 ? (
@@ -1084,7 +1084,7 @@ function SessionTranscriptPanel({
           <TranscriptMessageList messages={messages} />
         )}
       </div>
-      <div className="space-y-3 border-t border-border bg-card px-4 py-4">
+      <div className="space-y-3 border-t border-border bg-background px-3 py-3 md:px-4 md:py-4">
         <FollowUpSuggestions
           followUps={followUps}
           onSelect={handleSelectFollowUp}

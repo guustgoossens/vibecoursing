@@ -2,6 +2,8 @@
 
 Vibecoursing is an AI-guided conversational learning platform built with Next.js and Convex. Learners pick a topic, receive an AI-generated lesson plan, and progress through a chat experience that surfaces key terms, suggested follow-up prompts, and visible progress indicators. Authentication flows through WorkOS AuthKit and all AI interactions run via the Mistral SDK.
 
+You can visit the app at https://vibecoursing.com without any setup, or you can clone the repository and run it locally.
+
 ## Feature Highlights
 
 - **Topic blueprints:** AI generates structured learning plans with phases, objectives, and key terms.
