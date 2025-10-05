@@ -321,6 +321,8 @@ function Content() {
 
   const [activeSessionId, setActiveSessionId] = useState<Id<'learningSessions'> | null>(null);
   const [isIntakeOpen, setIsIntakeOpen] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isMobileCourseOpen, setIsMobileCourseOpen] = useState(false);
 
   useEffect(() => {
     if (sessions === undefined) {
@@ -346,18 +348,44 @@ function Content() {
   const activeSession = activeSessionId && sessions ? sessions.find((session) => session.id === activeSessionId) ?? null : null;
   const hasSessions = sessions?.length ? sessions.length > 0 : false;
 
-  const handleSelectSession = useCallback((sessionId: Id<'learningSessions'>) => {
-    setActiveSessionId((current) => (current === sessionId ? current : sessionId));
+  const openMobileSidebar = useCallback(() => {
+    setIsMobileSidebarOpen(true);
   }, []);
 
-  const handleSessionCreated = useCallback((sessionId: Id<'learningSessions'>) => {
-    setActiveSessionId(sessionId);
-    setIsIntakeOpen(false);
+  const closeMobileSidebar = useCallback(() => {
+    setIsMobileSidebarOpen(false);
   }, []);
+
+  const openMobileCourse = useCallback(() => {
+    setIsMobileCourseOpen(true);
+  }, []);
+
+  const closeMobileCourse = useCallback(() => {
+    setIsMobileCourseOpen(false);
+  }, []);
+
+  const handleSelectSession = useCallback(
+    (sessionId: Id<'learningSessions'>) => {
+      setActiveSessionId((current) => (current === sessionId ? current : sessionId));
+      closeMobileSidebar();
+    },
+    [closeMobileSidebar]
+  );
+
+  const handleSessionCreated = useCallback(
+    (sessionId: Id<'learningSessions'>) => {
+      setActiveSessionId(sessionId);
+      setIsIntakeOpen(false);
+      closeMobileSidebar();
+      closeMobileCourse();
+    },
+    [closeMobileCourse, closeMobileSidebar]
+  );
 
   const openIntake = useCallback(() => {
     setIsIntakeOpen(true);
-  }, []);
+    closeMobileSidebar();
+  }, [closeMobileSidebar]);
 
   const closeIntake = useCallback(() => {
     setIsIntakeOpen(false);
@@ -369,6 +397,12 @@ function Content() {
         sidebar={<SessionSidebarSkeleton />}
         main={<SessionMainSkeleton />}
         course={<CourseDashboardSkeleton user={user} onSignOut={signOut} />}
+        onOpenSidebar={openMobileSidebar}
+        onOpenCourse={openMobileCourse}
+        onCloseSidebar={closeMobileSidebar}
+        onCloseCourse={closeMobileCourse}
+        isSidebarOpen={isMobileSidebarOpen}
+        isCourseOpen={isMobileCourseOpen}
       />
     );
   }
@@ -411,7 +445,17 @@ function Content() {
 
   return (
     <>
-      <WorkspaceShell sidebar={sidebarContent} main={mainContent} course={courseContent} />
+      <WorkspaceShell
+        sidebar={sidebarContent}
+        main={mainContent}
+        course={courseContent}
+        onOpenSidebar={openMobileSidebar}
+        onOpenCourse={openMobileCourse}
+        onCloseSidebar={closeMobileSidebar}
+        onCloseCourse={closeMobileCourse}
+        isSidebarOpen={isMobileSidebarOpen}
+        isCourseOpen={isMobileCourseOpen}
+      />
       <SessionIntakeModal
         open={isIntakeOpen}
         onClose={closeIntake}
@@ -564,13 +608,6 @@ function SessionExperience({
           session={session}
           transcript={transcript}
           onStartNewSession={onStartNewSession}
-        />
-      </div>
-      <div className="border-t border-border bg-card px-4 py-5 xl:hidden">
-        <CourseDashboardContent
-          session={session}
-          phaseProgress={transcript?.phaseProgress}
-          variant="compact"
         />
       </div>
     </div>
@@ -908,20 +945,109 @@ function WorkspaceShell({
   sidebar,
   main,
   course,
+  onOpenSidebar,
+  onOpenCourse,
+  onCloseSidebar,
+  onCloseCourse,
+  isSidebarOpen,
+  isCourseOpen,
 }: {
   sidebar: ReactNode;
   main: ReactNode;
   course: ReactNode;
+  onOpenSidebar: () => void;
+  onOpenCourse: () => void;
+  onCloseSidebar: () => void;
+  onCloseCourse: () => void;
+  isSidebarOpen: boolean;
+  isCourseOpen: boolean;
 }) {
   return (
-    <div className="flex h-[100svh] w-full overflow-hidden bg-background text-foreground">
-      <aside className="flex h-full w-64 shrink-0 flex-col border-r border-sidebar bg-sidebar px-6 py-6 text-sidebar-foreground">
-        {sidebar}
-      </aside>
-      <main className="flex h-full flex-1 flex-col overflow-hidden bg-background">{main}</main>
-      <aside className="hidden h-full w-80 shrink-0 flex-col border-l border-border bg-card xl:flex">
-        {course}
-      </aside>
+    <div className="flex h-[100svh] w-full flex-col overflow-hidden bg-background text-foreground md:flex-row">
+      <header className="flex items-center justify-between border-b border-border px-4 py-3 md:hidden">
+        <button
+          type="button"
+          onClick={onOpenSidebar}
+          className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground transition hover:border-primary hover:text-primary"
+        >
+          Sessions
+        </button>
+        <span className="text-sm font-semibold text-foreground">Vibecoursing</span>
+        <button
+          type="button"
+          onClick={onOpenCourse}
+          className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground transition hover:border-primary hover:text-primary"
+        >
+          Progress
+        </button>
+      </header>
+      <div className="flex h-full flex-1 overflow-hidden">
+        <aside className="hidden h-full w-64 shrink-0 flex-col border-r border-sidebar bg-sidebar text-sidebar-foreground md:flex">
+          <div className="flex h-full flex-col overflow-hidden px-6 py-6">{sidebar}</div>
+        </aside>
+        <main className="flex h-full flex-1 flex-col overflow-hidden bg-background">{main}</main>
+        <aside className="hidden h-full w-80 shrink-0 flex-col border-l border-border bg-card xl:flex">
+          {course}
+        </aside>
+      </div>
+      <MobileOverlayPanel open={isSidebarOpen} onClose={onCloseSidebar} title="Sessions" side="left">
+        <div className="flex h-full flex-col px-2">
+          <div className="flex h-full flex-col rounded-2xl border border-transparent bg-sidebar px-4 py-5 text-sidebar-foreground shadow-lg">
+            {sidebar}
+          </div>
+        </div>
+      </MobileOverlayPanel>
+      <MobileOverlayPanel open={isCourseOpen} onClose={onCloseCourse} title="Progress" side="right">
+        <div className="flex h-full flex-col">{course}</div>
+      </MobileOverlayPanel>
+    </div>
+  );
+}
+
+function MobileOverlayPanel({
+  open,
+  onClose,
+  title,
+  children,
+  side = 'left',
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+  side?: 'left' | 'right';
+}) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex md:hidden">
+      <div
+        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
+        aria-hidden="true"
+        onClick={onClose}
+      />
+      <div
+        className={`relative z-10 flex h-full w-full max-w-md flex-col bg-background shadow-2xl ${
+          side === 'right' ? 'ml-auto' : 'mr-auto'
+        }`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <span className="text-sm font-semibold text-foreground">{title}</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-border px-3 py-1 text-xs font-medium text-foreground transition hover:border-primary hover:text-primary"
+          >
+            Close
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-4">{children}</div>
+      </div>
     </div>
   );
 }
