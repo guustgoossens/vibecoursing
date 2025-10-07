@@ -1080,7 +1080,7 @@ function SessionTranscriptPanel({
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const lastFollowUpRefreshMessageId = useRef<Id<'sessionMessages'> | null>(null);
   const streamingBufferRef = useRef('');
-  const streamingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamingTimerRef = useRef<number | null>(null);
   const streamingActiveRef = useRef(false);
 
   const isLoading = transcript === undefined;

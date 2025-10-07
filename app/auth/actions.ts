@@ -200,7 +200,14 @@ export async function verifyMagicCode(input: MagicLinkVerifyInput): Promise<Auth
 
     if (process.env.NODE_ENV !== 'production') {
       console.log('[auth] authenticateWithMagicAuth payload size', JSON.stringify(authResponse).length);
-      console.log('[auth] authenticateWithMagicAuth session payload size', JSON.stringify(authResponse.session ?? {}).length);
+      const sessionDetails =
+        typeof authResponse === 'object' && authResponse && 'session' in authResponse
+          ? (authResponse as { session?: unknown }).session
+          : undefined;
+      console.log(
+        '[auth] authenticateWithMagicAuth session payload size',
+        JSON.stringify(sessionDetails ?? {}).length,
+      );
     }
 
     const sessionPayload = {

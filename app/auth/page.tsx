@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent, ReactNode } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { AuthActionResult, FieldErrorKey } from './actions';
@@ -29,6 +29,14 @@ type SignUpFormState = {
 };
 
 export default function AuthPage() {
+  return (
+    <Suspense fallback={<AuthPageLoading />}>
+      <AuthPageInner />
+    </Suspense>
+  );
+}
+
+function AuthPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
@@ -165,7 +173,12 @@ export default function AuthPage() {
           setErrors: setSignInErrors,
           setStatus: setSignInStatus,
           router,
-          refreshAuth: () => refreshWorkOSAuth({ ensureSignedIn: true }),
+          refreshAuth: async () => {
+            const refreshResult = await refreshWorkOSAuth({ ensureSignedIn: true });
+            if (refreshResult && typeof refreshResult === 'object' && 'error' in refreshResult) {
+              console.warn('WorkOS auth refresh reported an error', refreshResult.error);
+            }
+          },
           pathname,
         });
       });
@@ -219,7 +232,12 @@ export default function AuthPage() {
           setErrors: setSignUpErrors,
           setStatus: setSignUpStatus,
           router,
-          refreshAuth: () => refreshWorkOSAuth({ ensureSignedIn: true }),
+          refreshAuth: async () => {
+            const refreshResult = await refreshWorkOSAuth({ ensureSignedIn: true });
+            if (refreshResult && typeof refreshResult === 'object' && 'error' in refreshResult) {
+              console.warn('WorkOS auth refresh reported an error', refreshResult.error);
+            }
+          },
           pathname,
         });
       });
@@ -593,6 +611,19 @@ export default function AuthPage() {
             </footer>
           </div>
         </main>
+      </div>
+    </div>
+  );
+}
+
+function AuthPageLoading() {
+  return (
+    <div className="min-h-screen w-full bg-background text-foreground">
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col overflow-hidden rounded-none bg-card shadow-xl lg:flex-row lg:rounded-3xl lg:border lg:border-border">
+        <div className="hidden flex-1 bg-muted lg:block" />
+        <div className="flex w-full flex-1 items-center justify-center bg-background px-6 py-12 sm:px-10 lg:max-w-lg lg:px-12">
+          <span className="text-sm text-muted-foreground">Loading…</span>
+        </div>
       </div>
     </div>
   );

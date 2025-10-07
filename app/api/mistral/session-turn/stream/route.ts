@@ -3,6 +3,7 @@ import { withAuth } from '@workos-inc/authkit-nextjs';
 import { fetchAction } from 'convex/nextjs';
 import { api } from '@/convex/_generated/api';
 import { Mistral } from '@mistralai/mistralai';
+import { Id } from '@/convex/_generated/dataModel';
 
 type StreamEvent =
   | { type: 'prepared'; payload: { userMessage: { id: string; body: string; createdAt: number } } }
@@ -16,7 +17,12 @@ const STREAM_LOG_PREFIX = '[MistralStream]';
 async function streamEvents(
   request: NextRequest,
   accessToken: string,
-  body: { sessionId: string; prompt: string; followUpId?: string; temperature?: number },
+  body: {
+    sessionId: Id<'learningSessions'>;
+    prompt: string;
+    followUpId?: Id<'sessionFollowUps'>;
+    temperature?: number;
+  },
 ) {
   const { readable, writable } = new TransformStream<Uint8Array>();
   const writer = writable.getWriter();
@@ -98,21 +104,25 @@ async function streamEvents(
               if (typeof part === 'string') {
                 return part;
               }
+              const chunkPart = part as {
+                text?: unknown;
+                content?: unknown;
+                delta?: unknown;
+              };
               const maybeText =
-                typeof part.text === 'string'
-                  ? part.text
-                  : typeof part.content === 'string'
-                    ? part.content
-                    : typeof part.delta === 'string'
-                      ? part.delta
+                typeof chunkPart.text === 'string'
+                  ? chunkPart.text
+                  : typeof chunkPart.content === 'string'
+                    ? chunkPart.content
+                    : typeof chunkPart.delta === 'string'
+                      ? chunkPart.delta
                       : '';
               return maybeText ?? '';
             })
             .join('');
         }
 
-        const finishReason =
-          chunk.data?.choices?.[0]?.finish_reason ?? chunk.data?.choices?.[0]?.finishReason ?? null;
+        const finishReason = chunk.data?.choices?.[0]?.finishReason ?? null;
         const hasUsage = Boolean(chunk.data?.usage);
 
         if (finishReason) {
@@ -145,9 +155,9 @@ async function streamEvents(
         const chunkUsage = chunk.data?.usage;
         if (chunkUsage) {
           usage = {
-            promptTokens: chunkUsage.prompt_tokens ?? usage?.promptTokens,
-            completionTokens: chunkUsage.completion_tokens ?? usage?.completionTokens,
-            totalTokens: chunkUsage.total_tokens ?? usage?.totalTokens,
+            promptTokens: chunkUsage.promptTokens ?? usage?.promptTokens,
+            completionTokens: chunkUsage.completionTokens ?? usage?.completionTokens,
+            totalTokens: chunkUsage.totalTokens ?? usage?.totalTokens,
           };
           console.info(`${STREAM_LOG_PREFIX} usage update`, {
             sessionId: prepared.sessionId,
@@ -192,7 +202,7 @@ async function streamEvents(
         sessionId: prepared.sessionId,
         userMessageId: prepared.userMessageId,
         assistantMessageId: turn.assistantMessage?.id ?? null,
-        completionTokens: turn.assistantMessage?.completionTokens ?? null,
+        completionTokens: turn.assistantMessage?.usage?.completionTokens ?? null,
         assistantBodyLength,
       });
 
@@ -273,9 +283,10 @@ export async function POST(request: NextRequest) {
     request,
     accessToken,
     {
-      sessionId,
+      sessionId: sessionId as Id<'learningSessions'>,
       prompt,
-      followUpId: typeof followUpId === 'string' ? followUpId : undefined,
+      followUpId:
+        typeof followUpId === 'string' ? (followUpId as Id<'sessionFollowUps'>) : undefined,
       temperature: typeof temperature === 'number' ? temperature : undefined,
     },
   );

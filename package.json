@@ -14,7 +14,7 @@
   },
   "scripts": {
     "dev": "npm-run-all --parallel dev:frontend dev:backend",
-    "dev:frontend": "next dev",
+    "dev:frontend": "NEXT_USE_TURBOPACK=0 next dev",
     "dev:backend": "convex dev",
     "predev": "convex dev --until-success && convex dashboard",
     "build": "next build",
