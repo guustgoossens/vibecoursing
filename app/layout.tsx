@@ -14,6 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://vibecoursing.com'),
   title: 'Vibecoursing — AI-Guided Conversational Learning',
   description:
     'Vibecoursing pairs AI-generated lesson plans with a conversational tutor so learners can explore any topic, follow curated prompts, and track progress in real time.',

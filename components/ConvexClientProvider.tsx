@@ -35,7 +35,14 @@ function useAuthFromAuthKit() {
           return (await refresh()) ?? null;
         }
 
-        return (await getAccessToken()) ?? null;
+        const token = await getAccessToken();
+        if (token) {
+          return token;
+        }
+
+        // WorkOS can briefly return null before a fresh session syncs client-side;
+        // fall back to forcing a refresh so Convex gets a valid token immediately.
+        return (await refresh()) ?? null;
       } catch (error) {
         console.error('Failed to get access token:', error);
         return null;

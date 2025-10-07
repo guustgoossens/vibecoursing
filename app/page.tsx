@@ -392,12 +392,18 @@ function Content() {
     setIsIntakeOpen(false);
   }, []);
 
+  const handleSignOut = useCallback(() => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const returnTo = origin ? `${origin}/auth?mode=signin` : '/auth?mode=signin';
+    void signOut({ returnTo });
+  }, [signOut]);
+
   if (bootstrap === undefined || sessions === undefined) {
     return (
       <WorkspaceShell
         sidebar={<SessionSidebarSkeleton />}
         main={<SessionMainSkeleton />}
-        course={<CourseDashboardSkeleton user={user} onSignOut={signOut} />}
+        course={<CourseDashboardSkeleton user={user} onSignOut={handleSignOut} />}
         onOpenSidebar={openMobileSidebar}
         onOpenCourse={openMobileCourse}
         onCloseSidebar={closeMobileSidebar}
@@ -422,10 +428,10 @@ function Content() {
 
   if (!hasSessions) {
     mainContent = <NoSessionsView viewer={viewer} onSessionCreated={handleSessionCreated} />;
-    courseContent = <CourseDashboardEmpty user={user} onSignOut={signOut} />;
+    courseContent = <CourseDashboardEmpty user={user} onSignOut={handleSignOut} />;
   } else if (!activeSession) {
     mainContent = <MissingSelectionView onStartNewSession={openIntake} />;
-    courseContent = <CourseDashboardPlaceholder user={user} onSignOut={signOut} />;
+    courseContent = <CourseDashboardPlaceholder user={user} onSignOut={handleSignOut} />;
   } else {
     mainContent = (
       <SessionExperience
@@ -437,7 +443,7 @@ function Content() {
     courseContent = (
       <CourseDashboardPanel
         user={user}
-        onSignOut={signOut}
+        onSignOut={handleSignOut}
         session={activeSession}
         transcript={transcript}
       />
@@ -1069,9 +1075,12 @@ function SessionTranscriptPanel({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFollowUp, setSelectedFollowUp] = useState<Id<'sessionFollowUps'> | null>(null);
-  const [pendingAssistant, setPendingAssistant] = useState<string | null>(null);
+  const [streamingAssistant, setStreamingAssistant] = useState<string | null>(null);
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const lastFollowUpRefreshMessageId = useRef<Id<'sessionMessages'> | null>(null);
+  const streamingBufferRef = useRef('');
+  const streamingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamingActiveRef = useRef(false);
 
   const isLoading = transcript === undefined;
   const rawMessages = transcript?.messages;
@@ -1095,7 +1104,7 @@ function SessionTranscriptPanel({
       return;
     }
     messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
-  }, [messages.length, pendingAssistant]);
+  }, [messages.length, streamingAssistant]);
 
   useEffect(() => {
     if (!latestAssistantMessageId) {
@@ -1134,6 +1143,44 @@ function SessionTranscriptPanel({
     | { type: 'final'; result: unknown }
     | { type: 'error'; message: string };
 
+  const stopStreamingTimer = useCallback(() => {
+    if (streamingTimerRef.current !== null) {
+      clearInterval(streamingTimerRef.current);
+      streamingTimerRef.current = null;
+    }
+  }, []);
+
+  const flushStreamingBuffer = useCallback(() => {
+    const CHARS_PER_TICK = 8;
+    const queue = streamingBufferRef.current;
+
+    if (queue.length === 0) {
+      if (!streamingActiveRef.current) {
+        stopStreamingTimer();
+        setStreamingAssistant(null);
+      }
+      return;
+    }
+
+    const chunkLength = Math.min(CHARS_PER_TICK, queue.length);
+    const chunk = queue.slice(0, chunkLength);
+    streamingBufferRef.current = queue.slice(chunkLength);
+    setStreamingAssistant((prev) => (prev ?? '') + chunk);
+  }, [stopStreamingTimer]);
+
+  const ensureStreamingTimer = useCallback(() => {
+    if (streamingTimerRef.current !== null) {
+      return;
+    }
+    streamingTimerRef.current = window.setInterval(flushStreamingBuffer, 60);
+  }, [flushStreamingBuffer]);
+
+  useEffect(() => {
+    return () => {
+      stopStreamingTimer();
+    };
+  }, [stopStreamingTimer]);
+
   const sendTurn = useCallback(
     async (options?: { prompt?: string; followUpId?: Id<'sessionFollowUps'> }) => {
       const sourcePrompt = options?.prompt ?? draft;
@@ -1154,8 +1201,12 @@ function SessionTranscriptPanel({
 
       try {
         setDraft('');
+        streamingActiveRef.current = true;
+        streamingBufferRef.current = '';
+        setStreamingAssistant('');
+        ensureStreamingTimer();
 
-        const response = await fetch('/api/mistral/session-turn/stream', {
+      const response = await fetch('/api/mistral/session-turn/stream', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1177,16 +1228,27 @@ function SessionTranscriptPanel({
         const applyEvent = (event: StreamEvent) => {
           switch (event.type) {
             case 'delta':
-              setPendingAssistant((prev) => (prev ?? '') + event.token);
+              streamingBufferRef.current += event.token;
+              ensureStreamingTimer();
+              flushStreamingBuffer();
               break;
             case 'error':
               streamError = event.message;
               setError(event.message);
-              setPendingAssistant(null);
+              streamingActiveRef.current = false;
+              streamingBufferRef.current = '';
+              setStreamingAssistant(null);
               break;
             case 'final':
               sawFinal = true;
-              setPendingAssistant(null);
+              streamingActiveRef.current = false;
+              if (event.result && typeof event.result === 'object') {
+                const maybeAssistant = (event.result as { assistantMessage?: { body?: string } }).assistantMessage?.body;
+                if (typeof maybeAssistant === 'string') {
+                  setStreamingAssistant(maybeAssistant);
+                }
+              }
+              flushStreamingBuffer();
               setSelectedFollowUp(null);
               break;
             default:
@@ -1194,17 +1256,7 @@ function SessionTranscriptPanel({
           }
         };
 
-        // Immediately show a placeholder while we wait for the first delta.
-        setPendingAssistant('');
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-
+        const processBufferedEvents = () => {
           let boundary = buffer.indexOf('\n\n');
           while (boundary !== -1) {
             const rawEvent = buffer.slice(0, boundary);
@@ -1221,8 +1273,7 @@ function SessionTranscriptPanel({
                   const parsed = JSON.parse(jsonPayload) as StreamEvent;
                   applyEvent(parsed);
                   if (parsed.type === 'error') {
-                    await reader.cancel();
-                    break;
+                    return false;
                   }
                 } catch (parseError) {
                   console.error('Failed to parse streaming event', parseError);
@@ -1232,10 +1283,26 @@ function SessionTranscriptPanel({
 
             boundary = buffer.indexOf('\n\n');
           }
+          return true;
+        };
 
-          if (streamError) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
             break;
           }
+
+          buffer += decoder.decode(value, { stream: true });
+
+          const shouldContinue = processBufferedEvents();
+          if (!shouldContinue || streamError) {
+            await reader.cancel();
+            break;
+          }
+        }
+
+        if (buffer.length > 0) {
+          processBufferedEvents();
         }
 
         if (streamError) {
@@ -1253,12 +1320,17 @@ function SessionTranscriptPanel({
             : 'Something went wrong while generating a response.';
         setError(message);
         setDraft(sourcePrompt);
-        setPendingAssistant(null);
+        streamingActiveRef.current = false;
+        streamingBufferRef.current = '';
+        setStreamingAssistant(null);
       } finally {
+        if (!streamingActiveRef.current && streamingBufferRef.current.length === 0) {
+          stopStreamingTimer();
+        }
         setIsSubmitting(false);
       }
     },
-    [draft, selectedFollowUp, sessionId]
+    [draft, ensureStreamingTimer, flushStreamingBuffer, selectedFollowUp, sessionId, stopStreamingTimer]
   );
 
   const handleDraftChange = useCallback((value: string) => {
@@ -1311,7 +1383,7 @@ function SessionTranscriptPanel({
         ) : messages.length === 0 ? (
           <EmptyTranscriptState />
         ) : (
-          <TranscriptMessageList messages={messages} pendingAssistant={pendingAssistant} />
+          <TranscriptMessageList messages={messages} streamingAssistant={streamingAssistant} />
         )}
       </div>
       <div className="space-y-3 border-t border-border bg-background px-3 py-3 md:px-4 md:py-4">
@@ -1335,10 +1407,10 @@ function SessionTranscriptPanel({
 
 function TranscriptMessageList({
   messages,
-  pendingAssistant,
+  streamingAssistant,
 }: {
   messages: SessionTranscriptMessage[];
-  pendingAssistant: string | null;
+  streamingAssistant: string | null;
 }) {
   const seenMessageIds = useRef(new Set<Id<'sessionMessages'>>());
 
@@ -1385,7 +1457,7 @@ function TranscriptMessageList({
           </li>
         );
       })}
-      {pendingAssistant !== null && (
+      {streamingAssistant !== null && (
         <li
           key="pending-assistant"
           className="rounded-xl border border-border bg-card text-foreground px-4 py-3 text-sm shadow-sm animate-pulse"
@@ -1394,8 +1466,8 @@ function TranscriptMessageList({
             <span className="font-semibold tracking-wide text-foreground">Vibecoursing</span>
             <span>Streaming…</span>
           </div>
-          {pendingAssistant.trim().length > 0 ? (
-            <TranscriptMessageBody body={pendingAssistant} />
+          {streamingAssistant.trim().length > 0 ? (
+            <TranscriptMessageBody body={streamingAssistant} />
           ) : (
             <p className="mt-2 text-sm leading-6 text-muted-foreground">Generating a response…</p>
           )}
