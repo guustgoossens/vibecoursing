@@ -9,6 +9,9 @@ const DEFAULT_BASE_URL = 'https://api.mistral.ai/v1';
 const RETRYABLE_STATUS = 429;
 const MAX_RETRIES = 2;
 const BASE_BACKOFF_MS = 400;
+const DEFAULT_CHAT_MODEL = DEFAULT_MODEL;
+const DEFAULT_CHAT_TEMPERATURE = 0.6;
+const DEFAULT_CHAT_MAX_TOKENS = 600;
 
 type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -132,6 +135,23 @@ function extractJsonPayload(raw: string): string {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requireUser(ctx: ActionCtx): Promise<Doc<'users'>> {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    throw new ConvexError('NOT_AUTHENTICATED');
+  }
+
+  const user = (await ctx.runQuery(internal.mistral.getUserByExternalId, {
+    externalId: identity.subject,
+  })) as Doc<'users'> | null;
+
+  if (!user) {
+    throw new ConvexError('USER_PROFILE_MISSING');
+  }
+
+  return user;
 }
 
 type FollowUpSuggestion = {
@@ -426,6 +446,30 @@ type SessionTurnResult = {
   phaseProgress: PhaseProgress[];
 };
 
+type PreparedSessionTurn = {
+  sessionId: Id<'learningSessions'>;
+  userMessageId: Id<'sessionMessages'>;
+  userMessage: LoggedUserMessage['message'];
+  messagesForMistral: ChatMessage[];
+  temperature: number;
+  maxTokens: number;
+  model: string;
+};
+
+type PrepareSessionTurnParams = {
+  sessionId: Id<'learningSessions'>;
+  prompt: string;
+  followUpId?: Id<'sessionFollowUps'>;
+  temperature?: number;
+};
+
+type FinalizeSessionTurnParams = {
+  sessionId: Id<'learningSessions'>;
+  userMessageId: Id<'sessionMessages'>;
+  assistantBody: string;
+  usage?: MistralUsage;
+};
+
 export const getUserByExternalId = internalQuery({
   args: {
     externalId: v.string(),
@@ -686,6 +730,128 @@ export const recordAssistantTurn = internalMutation({
     };
   },
 });
+
+async function prepareSessionTurnForUser(
+  ctx: ActionCtx,
+  user: Doc<'users'>,
+  params: PrepareSessionTurnParams,
+): Promise<PreparedSessionTurn> {
+  const trimmedPrompt = cleanString(params.prompt);
+  if (!trimmedPrompt) {
+    throw new ConvexError('EMPTY_MESSAGE');
+  }
+
+  const sessionContext = (await ctx.runQuery(internal.mistral.getSessionContextForTurn, {
+    sessionId: params.sessionId,
+    userId: user._id,
+  })) as SessionContextForTurn;
+
+  const userMessageResult = (await ctx.runMutation(internal.mistral.logSessionUserMessage, {
+    sessionId: params.sessionId,
+    userId: user._id,
+    body: trimmedPrompt,
+    followUpId: params.followUpId ?? undefined,
+  })) as LoggedUserMessage;
+
+  const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
+  for (const term of sessionContext.terms) {
+    termState.set(term._id, term);
+  }
+
+  const phaseProgressBefore = buildPhaseProgress(sessionContext.phases, termState);
+  const planContext = buildPlanContext(sessionContext.session, phaseProgressBefore);
+
+  const transcriptMessages: ChatMessage[] = sessionContext.transcript.map((message) => ({
+    role: message.role,
+    content: message.body,
+  }));
+  transcriptMessages.push({ role: 'user', content: trimmedPrompt });
+
+  const planMessage: ChatMessage | null = planContext
+    ? {
+        role: 'system',
+        content: `Learning plan context:\n${JSON.stringify(planContext)}`,
+      }
+    : null;
+
+  const messagesForMistral = planMessage ? [planMessage, ...transcriptMessages] : transcriptMessages;
+
+  const temperature = params.temperature ?? DEFAULT_CHAT_TEMPERATURE;
+
+  return {
+    sessionId: params.sessionId,
+    userMessageId: userMessageResult.message.id,
+    userMessage: userMessageResult.message,
+    messagesForMistral,
+    temperature,
+    maxTokens: DEFAULT_CHAT_MAX_TOKENS,
+    model: DEFAULT_CHAT_MODEL,
+  };
+}
+
+async function finalizeSessionTurnForUser(
+  ctx: ActionCtx,
+  user: Doc<'users'>,
+  params: FinalizeSessionTurnParams,
+): Promise<SessionTurnResult> {
+  const assistantBody = cleanString(params.assistantBody);
+  if (!assistantBody) {
+    throw new ConvexError('EMPTY_MESSAGE');
+  }
+
+  const turnResult = (await ctx.runMutation(internal.mistral.recordAssistantTurn, {
+    sessionId: params.sessionId,
+    assistantBody,
+    usage: params.usage
+      ? {
+          promptTokens: params.usage.promptTokens,
+          completionTokens: params.usage.completionTokens,
+          totalTokens: params.usage.totalTokens,
+        }
+      : undefined,
+  })) as RecordedAssistantTurn;
+
+  const sessionContextAfter = (await ctx.runQuery(internal.mistral.getSessionContextForTurn, {
+    sessionId: params.sessionId,
+    userId: user._id,
+  })) as SessionContextForTurn;
+
+  const transcriptWithAssistant: ChatMessage[] = sessionContextAfter.transcript.map((message) => ({
+    role: message.role,
+    content: message.body,
+  }));
+
+  await refreshFollowUpSuggestions({
+    ctx,
+    sessionId: params.sessionId,
+    transcriptWithAssistant,
+    phaseProgress: turnResult.phaseProgress,
+    assistantMessage: {
+      id: turnResult.assistantMessage.id,
+      createdAt: turnResult.assistantMessage.createdAt,
+    },
+  });
+
+  const userMessageDoc = sessionContextAfter.transcript.find(
+    (message) => message._id === params.userMessageId && message.role === 'user',
+  );
+
+  if (!userMessageDoc) {
+    throw new ConvexError('USER_MESSAGE_NOT_FOUND');
+  }
+
+  return {
+    session: turnResult.session,
+    userMessage: {
+      id: userMessageDoc._id,
+      body: userMessageDoc.body,
+      createdAt: userMessageDoc.createdAt,
+    },
+    assistantMessage: turnResult.assistantMessage,
+    newlyCoveredTerms: turnResult.newlyCoveredTerms,
+    phaseProgress: turnResult.phaseProgress,
+  };
+}
 
 async function callMistral({ ctx: _ctx, model, temperature, maxTokens, systemPrompt, messages }: CallMistralOptions) {
   const apiKey = process.env.MISTRAL_API_KEY;
@@ -959,6 +1125,32 @@ export const generateRecap = action({
   },
 });
 
+export const prepareSessionTurn = action({
+  args: {
+    sessionId: v.id('learningSessions'),
+    prompt: v.string(),
+    followUpId: v.optional(v.id('sessionFollowUps')),
+    temperature: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireUser(ctx);
+    return prepareSessionTurnForUser(ctx, user, args as PrepareSessionTurnParams);
+  },
+});
+
+export const finalizeSessionTurn = action({
+  args: {
+    sessionId: v.id('learningSessions'),
+    userMessageId: v.id('sessionMessages'),
+    assistantBody: v.string(),
+    usage: v.optional(mistralUsageValidator),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireUser(ctx);
+    return finalizeSessionTurnForUser(ctx, user, args as FinalizeSessionTurnParams);
+  },
+});
+
 export const runSessionTurn = action({
   args: {
     sessionId: v.id('learningSessions'),
@@ -967,95 +1159,31 @@ export const runSessionTurn = action({
     temperature: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<SessionTurnResult> => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new ConvexError('NOT_AUTHENTICATED');
-    }
+    const user = await requireUser(ctx);
 
-    const user = (await ctx.runQuery(internal.mistral.getUserByExternalId, {
-      externalId: identity.subject,
-    })) as Doc<'users'> | null;
-    if (!user) {
-      throw new ConvexError('USER_PROFILE_MISSING');
-    }
-
-    const trimmedPrompt = cleanString(args.prompt);
-    if (!trimmedPrompt) {
-      throw new ConvexError('EMPTY_MESSAGE');
-    }
-
-    const sessionContext = (await ctx.runQuery(internal.mistral.getSessionContextForTurn, {
+    const prepared = await prepareSessionTurnForUser(ctx, user, {
       sessionId: args.sessionId,
-      userId: user._id,
-    })) as SessionContextForTurn;
-
-    const { session, phases, terms, transcript } = sessionContext;
-
-    const userMessageResult = (await ctx.runMutation(internal.mistral.logSessionUserMessage, {
-      sessionId: args.sessionId,
-      userId: user._id,
-      body: trimmedPrompt,
+      prompt: args.prompt,
       followUpId: args.followUpId ?? undefined,
-    })) as LoggedUserMessage;
-
-    const termState = new Map<Id<'sessionTerms'>, Doc<'sessionTerms'>>();
-    for (const term of terms) {
-      termState.set(term._id, term);
-    }
-
-    const phaseProgressBefore = buildPhaseProgress(phases, termState);
-    const planContext = buildPlanContext(session, phaseProgressBefore);
-
-    const transcriptMessages: ChatMessage[] = transcript.map((message) => ({
-      role: message.role,
-      content: message.body,
-    }));
-    transcriptMessages.push({ role: 'user', content: trimmedPrompt });
-
-    const planMessage: ChatMessage | null = planContext
-      ? {
-          role: 'system',
-          content: `Learning plan context:\n${JSON.stringify(planContext)}`,
-        }
-      : null;
-
-    const messagesForMistral = planMessage ? [planMessage, ...transcriptMessages] : transcriptMessages;
+      temperature: args.temperature ?? undefined,
+    });
 
     const { content, usage } = await callMistral({
       ctx,
-      messages: messagesForMistral,
-      temperature: args.temperature ?? 0.6,
-      maxTokens: 600,
+      messages: prepared.messagesForMistral,
+      model: prepared.model,
+      temperature: prepared.temperature,
+      maxTokens: prepared.maxTokens,
       systemPrompt:
         'You are Vibecoursing, an enthusiastic and empathetic learning companion. Provide actionable guidance, keep replies under 180 words, and favour follow-up questions that reinforce key terms.',
     });
-    const assistantBody = content.trim();
 
-    const turnResult = (await ctx.runMutation(internal.mistral.recordAssistantTurn, {
-      sessionId: args.sessionId,
-      assistantBody,
-      usage: usage ?? undefined,
-    })) as RecordedAssistantTurn;
-
-    const followUpTranscript: ChatMessage[] = [...transcriptMessages, { role: 'assistant', content: assistantBody }];
-    await refreshFollowUpSuggestions({
-      ctx,
-      sessionId: args.sessionId,
-      transcriptWithAssistant: followUpTranscript,
-      phaseProgress: turnResult.phaseProgress,
-      assistantMessage: {
-        id: turnResult.assistantMessage.id,
-        createdAt: turnResult.assistantMessage.createdAt,
-      },
+    return finalizeSessionTurnForUser(ctx, user, {
+      sessionId: prepared.sessionId,
+      userMessageId: prepared.userMessageId,
+      assistantBody: content,
+      usage,
     });
-
-    return {
-      session: turnResult.session,
-      userMessage: userMessageResult.message,
-      assistantMessage: turnResult.assistantMessage,
-      newlyCoveredTerms: turnResult.newlyCoveredTerms,
-      phaseProgress: turnResult.phaseProgress,
-    };
   },
 });
 

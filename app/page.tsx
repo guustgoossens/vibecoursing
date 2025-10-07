@@ -1,6 +1,7 @@
 'use client';
 
 import { Authenticated, Unauthenticated, useAction, useMutation, useQuery } from 'convex/react';
+import AuthPage from '@/app/auth/page';
 import { api } from '@/convex/_generated/api';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -1063,12 +1064,12 @@ function SessionTranscriptPanel({
   onStartNewSession: () => void;
 }) {
   const sessionId = session.id;
-  const runSessionTurn = useAction(api.mistral.runSessionTurn);
   const refreshSessionFollowUps = useAction(api.mistral.refreshSessionFollowUps);
   const [draft, setDraft] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFollowUp, setSelectedFollowUp] = useState<Id<'sessionFollowUps'> | null>(null);
+  const [pendingAssistant, setPendingAssistant] = useState<string | null>(null);
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const lastFollowUpRefreshMessageId = useRef<Id<'sessionMessages'> | null>(null);
 
@@ -1094,7 +1095,7 @@ function SessionTranscriptPanel({
       return;
     }
     messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
-  }, [messages.length]);
+  }, [messages.length, pendingAssistant]);
 
   useEffect(() => {
     if (!latestAssistantMessageId) {
@@ -1127,6 +1128,12 @@ function SessionTranscriptPanel({
     }
   }, [followUps, selectedFollowUp]);
 
+  type StreamEvent =
+    | { type: 'prepared'; payload?: { userMessage: { id: string; body: string; createdAt: number } } }
+    | { type: 'delta'; token: string }
+    | { type: 'final'; result: unknown }
+    | { type: 'error'; message: string };
+
   const sendTurn = useCallback(
     async (options?: { prompt?: string; followUpId?: Id<'sessionFollowUps'> }) => {
       const sourcePrompt = options?.prompt ?? draft;
@@ -1135,26 +1142,123 @@ function SessionTranscriptPanel({
         setError('Enter a message to continue the session.');
         return;
       }
+
       setIsSubmitting(true);
       setError(null);
+
+      const payload = {
+        sessionId,
+        prompt: trimmed,
+        followUpId: options?.followUpId ?? selectedFollowUp ?? undefined,
+      };
+
       try {
         setDraft('');
-        await runSessionTurn({
-          sessionId,
-          prompt: trimmed,
-          followUpId: options?.followUpId ?? selectedFollowUp ?? undefined,
+
+        const response = await fetch('/api/mistral/session-turn/stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
         });
-        setSelectedFollowUp(null);
+
+        if (!response.ok || !response.body) {
+          const errorText = await response.text();
+          throw new Error(errorText || 'Failed to start the streaming response.');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let streamError: string | null = null;
+        let sawFinal = false;
+
+        const applyEvent = (event: StreamEvent) => {
+          switch (event.type) {
+            case 'delta':
+              setPendingAssistant((prev) => (prev ?? '') + event.token);
+              break;
+            case 'error':
+              streamError = event.message;
+              setError(event.message);
+              setPendingAssistant(null);
+              break;
+            case 'final':
+              sawFinal = true;
+              setPendingAssistant(null);
+              setSelectedFollowUp(null);
+              break;
+            default:
+              break;
+          }
+        };
+
+        // Immediately show a placeholder while we wait for the first delta.
+        setPendingAssistant('');
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+
+          let boundary = buffer.indexOf('\n\n');
+          while (boundary !== -1) {
+            const rawEvent = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+
+            const dataLine = rawEvent
+              .split('\n')
+              .find((line) => line.startsWith('data: '));
+
+            if (dataLine) {
+              const jsonPayload = dataLine.slice(6);
+              if (jsonPayload) {
+                try {
+                  const parsed = JSON.parse(jsonPayload) as StreamEvent;
+                  applyEvent(parsed);
+                  if (parsed.type === 'error') {
+                    await reader.cancel();
+                    break;
+                  }
+                } catch (parseError) {
+                  console.error('Failed to parse streaming event', parseError);
+                }
+              }
+            }
+
+            boundary = buffer.indexOf('\n\n');
+          }
+
+          if (streamError) {
+            break;
+          }
+        }
+
+        if (streamError) {
+          throw new Error(streamError);
+        }
+
+        if (!sawFinal) {
+          throw new Error('Streaming ended before completion.');
+        }
       } catch (err) {
-        console.error('Failed to run session turn', err);
-        setError(normaliseSessionTurnError(err));
-        // restore draft so the user can edit/resubmit
+        console.error('Failed to stream session turn', err);
+        const message =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Something went wrong while generating a response.';
+        setError(message);
         setDraft(sourcePrompt);
+        setPendingAssistant(null);
       } finally {
         setIsSubmitting(false);
       }
     },
-    [draft, runSessionTurn, selectedFollowUp, sessionId]
+    [draft, selectedFollowUp, sessionId]
   );
 
   const handleDraftChange = useCallback((value: string) => {
@@ -1207,7 +1311,7 @@ function SessionTranscriptPanel({
         ) : messages.length === 0 ? (
           <EmptyTranscriptState />
         ) : (
-          <TranscriptMessageList messages={messages} />
+          <TranscriptMessageList messages={messages} pendingAssistant={pendingAssistant} />
         )}
       </div>
       <div className="space-y-3 border-t border-border bg-background px-3 py-3 md:px-4 md:py-4">
@@ -1229,7 +1333,13 @@ function SessionTranscriptPanel({
   );
 }
 
-function TranscriptMessageList({ messages }: { messages: SessionTranscriptMessage[] }) {
+function TranscriptMessageList({
+  messages,
+  pendingAssistant,
+}: {
+  messages: SessionTranscriptMessage[];
+  pendingAssistant: string | null;
+}) {
   const seenMessageIds = useRef(new Set<Id<'sessionMessages'>>());
 
   return (
@@ -1275,6 +1385,22 @@ function TranscriptMessageList({ messages }: { messages: SessionTranscriptMessag
           </li>
         );
       })}
+      {pendingAssistant !== null && (
+        <li
+          key="pending-assistant"
+          className="rounded-xl border border-border bg-card text-foreground px-4 py-3 text-sm shadow-sm animate-pulse"
+        >
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="font-semibold tracking-wide text-foreground">Vibecoursing</span>
+            <span>Streaming…</span>
+          </div>
+          {pendingAssistant.trim().length > 0 ? (
+            <TranscriptMessageBody body={pendingAssistant} />
+          ) : (
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">Generating a response…</p>
+          )}
+        </li>
+      )}
     </ul>
   );
 }
@@ -1670,22 +1796,7 @@ function SessionMainSkeleton() {
 }
 
 function UnauthenticatedState() {
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background px-6 text-center">
-      <h1 className="text-3xl font-bold">Learning sessions workspace</h1>
-      <p className="max-w-sm text-sm text-muted-foreground">Log in with WorkOS to explore the guided learning companion.</p>
-      <div className="flex flex-col gap-3">
-        <a href="/sign-in">
-          <button className="w-56 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background">Sign in</button>
-        </a>
-        <a href="/sign-up">
-          <button className="w-56 rounded-md border border-foreground px-4 py-2 text-sm font-medium text-foreground">
-            Sign up
-          </button>
-        </a>
-      </div>
-    </div>
-  );
+  return <AuthPage />;
 }
 
 function normaliseGeneratedPlan(plan: unknown): GeneratedPlan {
@@ -1764,25 +1875,6 @@ function normaliseIntakeError(error: unknown): string {
     }
   }
   return 'Something went wrong while creating the session. Please try again.';
-}
-
-function normaliseSessionTurnError(error: unknown): string {
-  if (error instanceof Error) {
-    const message = error.message ?? '';
-    if (message.includes('EMPTY_MESSAGE')) {
-      return 'Message cannot be empty.';
-    }
-    if (message.includes('MISTRAL_REQUEST_FAILED')) {
-      return 'The assistant could not respond. Try again in a moment.';
-    }
-    if (message.includes('MISTRAL_API_KEY_NOT_CONFIGURED')) {
-      return 'Mistral API key is not configured on the server.';
-    }
-    if (message.includes('SESSION_NOT_FOUND')) {
-      return 'Could not find that session. Refresh and try again.';
-    }
-  }
-  return 'Failed to send the turn. Please try again.';
 }
 
 function formatTimestamp(timestamp: number) {

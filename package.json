@@ -23,6 +23,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@mistralai/mistralai": "^1.10.0",
     "@workos-inc/authkit-nextjs": "2.9.0",
     "convex": "^1.27.3",
     "next": "15.4.3",
