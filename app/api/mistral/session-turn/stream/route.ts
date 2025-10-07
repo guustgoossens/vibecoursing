@@ -11,6 +11,7 @@ type StreamEvent =
   | { type: 'error'; message: string };
 
 const encoder = new TextEncoder();
+const STREAM_LOG_PREFIX = '[MistralStream]';
 
 async function streamEvents(
   request: NextRequest,
@@ -25,6 +26,9 @@ async function streamEvents(
   };
 
   const abortHandler = () => {
+    console.warn(`${STREAM_LOG_PREFIX} client aborted stream`, {
+      sessionId: body.sessionId,
+    });
     writer.close().catch(() => {
       // noop
     });
@@ -40,6 +44,15 @@ async function streamEvents(
         followUpId: body.followUpId,
         temperature: body.temperature,
       }, { token: accessToken });
+
+      console.info(`${STREAM_LOG_PREFIX} prepared turn`, {
+        sessionId: prepared.sessionId,
+        userMessageId: prepared.userMessageId,
+        followUpId: body.followUpId ?? null,
+        model: prepared.model,
+        temperature: prepared.temperature,
+        maxTokens: prepared.maxTokens,
+      });
 
       await sendEvent({
         type: 'prepared',
@@ -59,14 +72,74 @@ async function streamEvents(
         messages: prepared.messagesForMistral,
       });
 
+      console.info(`${STREAM_LOG_PREFIX} started mistral stream`, {
+        sessionId: prepared.sessionId,
+        userMessageId: prepared.userMessageId,
+        promptLength: body.prompt.length,
+      });
+
       let aggregated = '';
       let usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined;
+      let chunkIndex = 0;
+      let lastFinishReason: string | null = null;
 
       for await (const chunk of stream) {
-        const delta = chunk.data?.choices?.[0]?.delta?.content;
-        if (typeof delta === 'string' && delta.length > 0) {
-          aggregated += delta;
-          await sendEvent({ type: 'delta', token: delta });
+        chunkIndex += 1;
+        const deltaPayload = chunk.data?.choices?.[0]?.delta?.content;
+        let deltaText = '';
+        if (typeof deltaPayload === 'string') {
+          deltaText = deltaPayload;
+        } else if (Array.isArray(deltaPayload)) {
+          deltaText = deltaPayload
+            .map((part) => {
+              if (!part) {
+                return '';
+              }
+              if (typeof part === 'string') {
+                return part;
+              }
+              const maybeText =
+                typeof part.text === 'string'
+                  ? part.text
+                  : typeof part.content === 'string'
+                    ? part.content
+                    : typeof part.delta === 'string'
+                      ? part.delta
+                      : '';
+              return maybeText ?? '';
+            })
+            .join('');
+        }
+
+        const finishReason =
+          chunk.data?.choices?.[0]?.finish_reason ?? chunk.data?.choices?.[0]?.finishReason ?? null;
+        const hasUsage = Boolean(chunk.data?.usage);
+
+        if (finishReason) {
+          lastFinishReason = finishReason;
+        }
+
+        if (deltaText.length > 0) {
+          aggregated += deltaText;
+          await sendEvent({ type: 'delta', token: deltaText });
+          console.info(`${STREAM_LOG_PREFIX} delta`, {
+            sessionId: prepared.sessionId,
+            userMessageId: prepared.userMessageId,
+            chunkIndex,
+            deltaLength: deltaText.length,
+            aggregatedLength: aggregated.length,
+            finishReason,
+          });
+        }
+
+        if (finishReason || (!deltaText && hasUsage)) {
+          console.info(`${STREAM_LOG_PREFIX} non-content chunk`, {
+            sessionId: prepared.sessionId,
+            userMessageId: prepared.userMessageId,
+            chunkIndex,
+            finishReason,
+            hasUsage,
+          });
         }
 
         const chunkUsage = chunk.data?.usage;
@@ -76,12 +149,23 @@ async function streamEvents(
             completionTokens: chunkUsage.completion_tokens ?? usage?.completionTokens,
             totalTokens: chunkUsage.total_tokens ?? usage?.totalTokens,
           };
+          console.info(`${STREAM_LOG_PREFIX} usage update`, {
+            sessionId: prepared.sessionId,
+            userMessageId: prepared.userMessageId,
+            usage,
+          });
         }
       }
 
       if (aggregated.trim().length === 0) {
         throw new Error('Mistral returned an empty response');
       }
+
+      console.info(`${STREAM_LOG_PREFIX} finalizing turn`, {
+        sessionId: prepared.sessionId,
+        userMessageId: prepared.userMessageId,
+        aggregatedLength: aggregated.length,
+      });
 
       const turn = await fetchAction(api.mistral.finalizeSessionTurn, {
         sessionId: prepared.sessionId,
@@ -90,13 +174,49 @@ async function streamEvents(
         usage,
       }, { token: accessToken });
 
-      await sendEvent({ type: 'final', result: turn });
+      const persistedBody =
+        typeof turn.assistantMessage?.body === 'string' ? turn.assistantMessage.body : null;
+      const assistantBodyLength = persistedBody?.length ?? null;
+      const persistedMismatch = persistedBody && persistedBody !== aggregated;
+
+      if (persistedMismatch) {
+        console.warn(`${STREAM_LOG_PREFIX} persisted body mismatch`, {
+          sessionId: prepared.sessionId,
+          userMessageId: prepared.userMessageId,
+          aggregatedLength: aggregated.length,
+          persistedLength: assistantBodyLength,
+        });
+      }
+
+      console.info(`${STREAM_LOG_PREFIX} finalized`, {
+        sessionId: prepared.sessionId,
+        userMessageId: prepared.userMessageId,
+        assistantMessageId: turn.assistantMessage?.id ?? null,
+        completionTokens: turn.assistantMessage?.completionTokens ?? null,
+        assistantBodyLength,
+      });
+
+      await sendEvent({
+        type: 'final',
+        result: {
+          ...turn,
+          streamMeta: {
+            finishReason: lastFinishReason,
+          },
+        },
+      });
     } catch (error) {
-      console.error('Session turn streaming failed', error);
+      console.error(`${STREAM_LOG_PREFIX} stream failed`, {
+        sessionId: body.sessionId,
+        error,
+      });
       const message = error instanceof Error ? error.message : 'Unknown error';
       await sendEvent({ type: 'error', message });
     } finally {
       request.signal.removeEventListener('abort', abortHandler);
+      console.info(`${STREAM_LOG_PREFIX} closing stream`, {
+        sessionId: body.sessionId,
+      });
       await writer.close();
     }
   })();

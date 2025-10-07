@@ -11,7 +11,7 @@ const MAX_RETRIES = 2;
 const BASE_BACKOFF_MS = 400;
 const DEFAULT_CHAT_MODEL = DEFAULT_MODEL;
 const DEFAULT_CHAT_TEMPERATURE = 0.6;
-const DEFAULT_CHAT_MAX_TOKENS = 600;
+const DEFAULT_CHAT_MAX_TOKENS = 2560;
 
 type ChatRole = 'system' | 'user' | 'assistant';
 

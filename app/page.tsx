@@ -1076,6 +1076,7 @@ function SessionTranscriptPanel({
   const [error, setError] = useState<string | null>(null);
   const [selectedFollowUp, setSelectedFollowUp] = useState<Id<'sessionFollowUps'> | null>(null);
   const [streamingAssistant, setStreamingAssistant] = useState<string | null>(null);
+  const [streamingNotice, setStreamingNotice] = useState<string | null>(null);
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const lastFollowUpRefreshMessageId = useRef<Id<'sessionMessages'> | null>(null);
   const streamingBufferRef = useRef('');
@@ -1204,6 +1205,7 @@ function SessionTranscriptPanel({
         streamingActiveRef.current = true;
         streamingBufferRef.current = '';
         setStreamingAssistant('');
+        setStreamingNotice(null);
         ensureStreamingTimer();
 
       const response = await fetch('/api/mistral/session-turn/stream', {
@@ -1238,14 +1240,25 @@ function SessionTranscriptPanel({
               streamingActiveRef.current = false;
               streamingBufferRef.current = '';
               setStreamingAssistant(null);
+              setStreamingNotice(null);
               break;
             case 'final':
               sawFinal = true;
               streamingActiveRef.current = false;
               if (event.result && typeof event.result === 'object') {
-                const maybeAssistant = (event.result as { assistantMessage?: { body?: string } }).assistantMessage?.body;
+                const resultPayload = event.result as {
+                  assistantMessage?: { body?: string };
+                  streamMeta?: { finishReason?: string | null };
+                };
+                const maybeAssistant = resultPayload.assistantMessage?.body;
                 if (typeof maybeAssistant === 'string') {
                   setStreamingAssistant(maybeAssistant);
+                }
+                const finishReason = resultPayload.streamMeta?.finishReason ?? null;
+                if (finishReason === 'length') {
+                  setStreamingNotice("The response reached Mistral's token limit. Send a follow-up to continue the answer.");
+                } else {
+                  setStreamingNotice(null);
                 }
               }
               flushStreamingBuffer();
@@ -1323,6 +1336,7 @@ function SessionTranscriptPanel({
         streamingActiveRef.current = false;
         streamingBufferRef.current = '';
         setStreamingAssistant(null);
+        setStreamingNotice(null);
       } finally {
         if (!streamingActiveRef.current && streamingBufferRef.current.length === 0) {
           stopStreamingTimer();
@@ -1387,6 +1401,11 @@ function SessionTranscriptPanel({
         )}
       </div>
       <div className="space-y-3 border-t border-border bg-background px-3 py-3 md:px-4 md:py-4">
+        {streamingNotice && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm">
+            {streamingNotice}
+          </div>
+        )}
         <FollowUpSuggestions
           followUps={followUps}
           onSelect={handleSelectFollowUp}
