@@ -4,7 +4,7 @@ import { Authenticated, Unauthenticated, useAction, useMutation, useQuery } from
 import AuthPage from '@/app/auth/page';
 import { api } from '@/convex/_generated/api';
 import { useAuth } from '@workos-inc/authkit-nextjs/components';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Children, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
@@ -188,19 +188,35 @@ const markdownComponents: ReactMarkdownComponents = {
       return (
         <code
           {...props}
-          className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground"
+          className="rounded bg-muted px-1 py-0 font-mono text-[0.92em] text-foreground align-middle"
         >
           {children}
         </code>
       );
     }
 
+    const rawText = Children.toArray(children)
+      .filter((child): child is string => typeof child === 'string')
+      .join('');
+    const normalizedText = rawText.replace(/\r/g, '');
+    const lineSegments = normalizedText.split('\n');
+    const trailingTrimmed =
+      lineSegments.length > 1 && lineSegments[lineSegments.length - 1].trim().length === 0
+        ? lineSegments.slice(0, -1)
+        : lineSegments;
+    const isMultiline = trailingTrimmed.length > 1;
+    const codeClasses = [
+      'rounded-md bg-slate-950/90 font-mono text-sm text-slate-100 whitespace-pre',
+      isMultiline
+        ? 'mt-3 block w-full overflow-x-auto px-3 py-3'
+        : 'inline-flex max-w-full items-center px-2 py-0.5 align-middle',
+      className ?? '',
+    ].join(' ');
+
     return (
-      <pre className="mt-3 overflow-x-auto rounded-md bg-slate-950/90 p-3 text-sm text-slate-100">
-        <code {...props} className={className}>
-          {children}
-        </code>
-      </pre>
+      <code {...props} className={codeClasses}>
+        {children}
+      </code>
     );
   },
   table: ({ children, ...props }) => (
