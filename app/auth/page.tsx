@@ -88,7 +88,7 @@ function AuthPageInner() {
   const heroCopy = useMemo(() => {
     if (activeTab === 'signup') {
       return {
-        heading: 'Curiosity-first learning',
+        heading: 'Welcome to Vibecoursing ✨',
         body: 'Chat-based journeys powered by Mistral. Start exploring in minutes.',
       };
     }
@@ -301,7 +301,7 @@ function AuthPageInner() {
           <div className="absolute inset-6 rounded-3xl border border-white/10 bg-white/10" />
           <div className="relative z-10 m-auto flex max-w-lg flex-col gap-4 p-12 text-primary-foreground">
             <span className="inline-flex w-fit items-center rounded-full bg-white/20 px-4 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-white/80 backdrop-blur">
-              Curiosity-first
+              Curiosity-first learning
             </span>
             <h1 className="text-4xl font-semibold leading-tight drop-shadow-sm md:text-5xl">
               {heroCopy.heading}
@@ -418,7 +418,7 @@ function AuthPageInner() {
                       disabled={isProcessingSignIn}
                       className="w-full rounded-lg bg-gradient-to-r from-[hsl(var(--gradient-orange-2))] to-[hsl(var(--gradient-red-1))] px-4 py-2.5 text-base font-semibold text-primary-foreground shadow-lg shadow-[hsl(var(--gradient-orange-2))/25] transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-70"
                     >
-                      {isProcessingSignIn ? 'Sending code…' : 'Email me a code'}
+                      {isProcessingSignIn ? 'Sending code…' : 'Continue'}
                     </button>
                   ) : (
                     <div className="space-y-3">
@@ -567,7 +567,7 @@ function AuthPageInner() {
                       disabled={isProcessingSignUp}
                       className="w-full rounded-lg bg-gradient-to-r from-[hsl(var(--gradient-yellow))] via-[hsl(var(--gradient-orange-1))] to-[hsl(var(--gradient-red-1))] px-4 py-2.5 text-base font-semibold text-primary-foreground shadow-lg shadow-[hsl(var(--gradient-yellow))/20] transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-70"
                     >
-                      {isProcessingSignUp ? 'Sending code…' : 'Email me a code'}
+                      {isProcessingSignUp ? 'Sending code…' : 'Continue'}
                     </button>
                   ) : (
                     <div className="space-y-3">
