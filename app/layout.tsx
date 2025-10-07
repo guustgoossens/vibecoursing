@@ -30,15 +30,28 @@ export const metadata: Metadata = {
       'Explore any topic with AI-generated lesson plans, guided chat prompts, and real-time progress tracking on Vibecoursing.',
     type: 'website',
     siteName: 'Vibecoursing',
+    images: [
+      {
+        url: '/image.png',
+        width: 565,
+        height: 565,
+        alt: 'Pixelated orange cat wearing a graduation cap',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'Vibecoursing — AI-Guided Conversational Learning',
     description:
       'AI-guided conversational learning plans, curated prompts, and progress tracking tailored to how you learn best.',
+    images: ['/image.png'],
   },
   icons: {
-    icon: '/convex.svg',
+    icon: {
+      url: '/image.png',
+      type: 'image/png',
+      sizes: '565x565',
+    },
   },
 };
 
