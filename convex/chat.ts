@@ -6,6 +6,9 @@ import type { Doc, Id } from './_generated/dataModel';
 type Identity = NonNullable<Awaited<ReturnType<QueryCtx['auth']['getUserIdentity']>>>;
 type AnyCtx = QueryCtx | MutationCtx;
 
+const DAILY_REQUEST_LIMIT = 30;
+const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 type Viewer = {
   id: Id<'users'>;
   email: string | null;
@@ -167,6 +170,47 @@ async function ensureUser(ctx: MutationCtx, identity: Identity): Promise<Doc<'us
     throw new ConvexError('USER_CREATION_FAILED');
   }
   return created;
+}
+
+async function enforceRateLimit(ctx: MutationCtx, userId: Id<'users'>): Promise<void> {
+  const now = Date.now();
+
+  const record = await ctx.db
+    .query('userRateLimits')
+    .withIndex('by_user', (q) => q.eq('userId', userId))
+    .unique();
+
+  if (!record) {
+    await ctx.db.insert('userRateLimits', {
+      userId,
+      windowStart: now,
+      requestCount: 1,
+    });
+    return;
+  }
+
+  const windowExpired = now - record.windowStart >= RATE_LIMIT_WINDOW_MS;
+
+  if (windowExpired) {
+    await ctx.db.patch(record._id, {
+      windowStart: now,
+      requestCount: 1,
+    });
+    return;
+  }
+
+  if (record.requestCount >= DAILY_REQUEST_LIMIT) {
+    const resetAt = record.windowStart + RATE_LIMIT_WINDOW_MS;
+    throw new ConvexError({
+      code: 'RATE_LIMIT_EXCEEDED',
+      remaining: 0,
+      resetAt,
+    });
+  }
+
+  await ctx.db.patch(record._id, {
+    requestCount: record.requestCount + 1,
+  });
 }
 
 function mapSessionDocToSummary(session: Doc<'learningSessions'>): SessionSummary {
@@ -492,6 +536,9 @@ export const createLearningSession = mutation({
     const identity = await requireIdentity(ctx);
     const user = await ensureUser(ctx, identity);
 
+    // Enforce rate limit before processing
+    await enforceRateLimit(ctx, user._id);
+
     const plan: GeneratedPlanPayload = args.plan;
 
     const topic = cleanString(plan.topic);
@@ -570,6 +617,43 @@ export const createLearningSession = mutation({
     return {
       sessionId,
       session: mapSessionDocToSummary(session),
+    };
+  },
+});
+
+export const getRateLimitStatus = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return null;
+    }
+
+    const user = await fetchUserBySubject(ctx, identity.subject);
+    if (!user) {
+      return { remaining: DAILY_REQUEST_LIMIT, resetAt: null, used: 0 };
+    }
+
+    const now = Date.now();
+
+    const record = await ctx.db
+      .query('userRateLimits')
+      .withIndex('by_user', (q) => q.eq('userId', user._id))
+      .unique();
+
+    if (!record) {
+      return { remaining: DAILY_REQUEST_LIMIT, resetAt: null, used: 0 };
+    }
+
+    const windowExpired = now - record.windowStart >= RATE_LIMIT_WINDOW_MS;
+    if (windowExpired) {
+      return { remaining: DAILY_REQUEST_LIMIT, resetAt: null, used: 0 };
+    }
+
+    return {
+      remaining: Math.max(0, DAILY_REQUEST_LIMIT - record.requestCount),
+      resetAt: record.windowStart + RATE_LIMIT_WINDOW_MS,
+      used: record.requestCount,
     };
   },
 });

@@ -7,6 +7,8 @@ import { useAuth } from '@workos-inc/authkit-nextjs/components';
 import { Children, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import toast from 'react-hot-toast';
+import { RateLimitIndicator } from '@/components/RateLimitIndicator';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import type { Components as ReactMarkdownComponents, ExtraProps } from 'react-markdown';
 import type { Id } from '@/convex/_generated/dataModel';
@@ -1343,10 +1345,23 @@ function SessionTranscriptPanel({
         }
       } catch (err) {
         console.error('Failed to stream session turn', err);
-        const message =
+        let message =
           err instanceof Error && err.message
             ? err.message
             : 'Something went wrong while generating a response.';
+
+        // Handle rate limit errors with toast
+        if (message.includes('RATE_LIMIT_EXCEEDED')) {
+          const rateLimitData = parseRateLimitError(message);
+          if (rateLimitData?.resetAt) {
+            const timeUntilReset = formatTimeUntilReset(rateLimitData.resetAt);
+            message = `You've reached your daily limit of 30 requests. Your limit resets ${timeUntilReset}.`;
+          } else {
+            message = "You've reached your daily limit of 30 requests. Please try again tomorrow.";
+          }
+          toast.error(message, { duration: 8000 });
+        }
+
         setError(message);
         setDraft(sourcePrompt);
         streamingActiveRef.current = false;
@@ -1624,7 +1639,10 @@ function SessionTurnComposer({
         className="w-full min-h-[120px] resize-y rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-0"
       />
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>{draft.length}/{MAX_PROMPT_LENGTH} characters</span>
+        <div className="flex items-center gap-3">
+          <span>{draft.length}/{MAX_PROMPT_LENGTH} characters</span>
+          <RateLimitIndicator />
+        </div>
         <span>Press ⌘+Enter (or Ctrl+Enter) to send</span>
       </div>
       <div className="flex items-center justify-between gap-3">
@@ -1748,7 +1766,13 @@ function SessionIntake({
       }
     } catch (err) {
       console.error('Session intake failed', err);
-      setError(normaliseIntakeError(err));
+      const errorMessage = normaliseIntakeError(err);
+      setError(errorMessage);
+
+      // Show toast for rate limit errors
+      if (err instanceof Error && err.message.includes('RATE_LIMIT_EXCEEDED')) {
+        toast.error(errorMessage, { duration: 8000 });
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -1956,12 +1980,50 @@ function normaliseGeneratedPlan(plan: unknown): GeneratedPlan {
   };
 }
 
+function formatTimeUntilReset(resetAt: number): string {
+  const now = Date.now();
+  const diffMs = resetAt - now;
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+
+  if (diffHours > 0) {
+    return `in ${diffHours} hour${diffHours === 1 ? '' : 's'}${diffMinutes > 0 ? ` and ${diffMinutes} minute${diffMinutes === 1 ? '' : 's'}` : ''}`;
+  }
+  return `in ${diffMinutes} minute${diffMinutes === 1 ? '' : 's'}`;
+}
+
+function parseRateLimitError(message: string): { resetAt?: number } | null {
+  if (!message.includes('RATE_LIMIT_EXCEEDED')) {
+    return null;
+  }
+  try {
+    const match = message.match(/\{[^}]+\}/);
+    if (match) {
+      return JSON.parse(match[0]);
+    }
+  } catch {
+    // Fall through
+  }
+  return {};
+}
+
 function normaliseIntakeError(error: unknown): string {
   if (error instanceof PlanValidationError) {
     return error.message;
   }
   if (error instanceof Error) {
     const message = error.message ?? '';
+
+    // Handle rate limit errors
+    const rateLimitData = parseRateLimitError(message);
+    if (rateLimitData) {
+      if (rateLimitData.resetAt) {
+        const timeUntilReset = formatTimeUntilReset(rateLimitData.resetAt);
+        return `You've reached your daily limit of 30 requests. Your limit resets ${timeUntilReset}.`;
+      }
+      return "You've reached your daily limit of 30 requests. Please try again tomorrow.";
+    }
+
     if (message.includes('MISTRAL_PLAN_PARSE_FAILED')) {
       return 'Mistral returned an invalid plan. Please try again.';
     }

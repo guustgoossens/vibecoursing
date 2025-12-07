@@ -1,10 +1,12 @@
 import { internal } from './_generated/api';
 import { action, internalMutation, internalQuery } from './_generated/server';
-import type { ActionCtx } from './_generated/server';
+import type { ActionCtx, MutationCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { ConvexError, v } from 'convex/values';
 
 const DEFAULT_MODEL = 'mistral-large-latest';
+const DAILY_REQUEST_LIMIT = 30;
+const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_BASE_URL = 'https://api.mistral.ai/v1';
 const RETRYABLE_STATUS = 429;
 const MAX_RETRIES = 2;
@@ -90,6 +92,47 @@ function cleanString(value?: string | null) {
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+async function enforceRateLimit(ctx: MutationCtx, userId: Id<'users'>): Promise<void> {
+  const now = Date.now();
+
+  const record = await ctx.db
+    .query('userRateLimits')
+    .withIndex('by_user', (q) => q.eq('userId', userId))
+    .unique();
+
+  if (!record) {
+    await ctx.db.insert('userRateLimits', {
+      userId,
+      windowStart: now,
+      requestCount: 1,
+    });
+    return;
+  }
+
+  const windowExpired = now - record.windowStart >= RATE_LIMIT_WINDOW_MS;
+
+  if (windowExpired) {
+    await ctx.db.patch(record._id, {
+      windowStart: now,
+      requestCount: 1,
+    });
+    return;
+  }
+
+  if (record.requestCount >= DAILY_REQUEST_LIMIT) {
+    const resetAt = record.windowStart + RATE_LIMIT_WINDOW_MS;
+    throw new ConvexError({
+      code: 'RATE_LIMIT_EXCEEDED',
+      remaining: 0,
+      resetAt,
+    });
+  }
+
+  await ctx.db.patch(record._id, {
+    requestCount: record.requestCount + 1,
+  });
 }
 
 function normaliseForMatching(value: string): string {
@@ -532,6 +575,9 @@ export const logSessionUserMessage = internalMutation({
     if (!session || session.userId !== args.userId) {
       throw new ConvexError('SESSION_NOT_FOUND');
     }
+
+    // Enforce rate limit before processing the message
+    await enforceRateLimit(ctx, args.userId);
 
     const trimmed = cleanString(args.body);
     if (!trimmed) {

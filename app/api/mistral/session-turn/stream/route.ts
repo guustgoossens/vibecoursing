@@ -220,7 +220,13 @@ async function streamEvents(
         sessionId: body.sessionId,
         error,
       });
-      const message = error instanceof Error ? error.message : 'Unknown error';
+
+      let message = 'Unknown error';
+      if (error instanceof Error) {
+        // Preserve the full error message including any JSON data (e.g., rate limit info)
+        message = error.message;
+      }
+
       await sendEvent({ type: 'error', message });
     } finally {
       request.signal.removeEventListener('abort', abortHandler);

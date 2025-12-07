@@ -66,4 +66,9 @@ export default defineSchema({
   })
     .index('by_session', ['sessionId'])
     .index('by_message', ['generatedForMessageId']),
+  userRateLimits: defineTable({
+    userId: v.id('users'),
+    windowStart: v.number(),
+    requestCount: v.number(),
+  }).index('by_user', ['userId']),
 });
